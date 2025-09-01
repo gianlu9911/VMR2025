@@ -1,0 +1,10 @@
+- ripetere test per ogni modello fake facendo fine tuning (usa percentuale dataset) versione relative vs senza relative. voglio tempo di esecuzione e accuracy di tutto
+    usa lr diversi per sezioni diversi della ripetere, non fare un solo un layer, prova anche tutta la backbone. fai sulla g_linear.py
+    repeti usando anche sd1.4
+
+- ripeti g_liear.py con backbone di sd1.4
+
+- coreset selection metodo scegliere per quali esempi portare in memoria MIR aljuindi 
+
+
+pensa: modo di usare relative representation
