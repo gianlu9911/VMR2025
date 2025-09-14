@@ -69,7 +69,7 @@ def evaluate(model, dataloader, criterion, device):
 def fine_tune(args):
     device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
-    save_path = f'./checkpoint/finetuned_stylegan1_on_stylegan2.pth'
+    save_path = f'./checkpoint/finetuned_stylegan1_on_stylegan2_last layer.pth'
 
     torch.manual_seed(args.seed)
     import numpy as np
@@ -111,6 +111,13 @@ def fine_tune(args):
         ckpt_path = PRETRAINED_MODELS['stylegan1']
         model = load_pretrained_model(ckpt_path)
         model.to(device)
+        criterion = nn.CrossEntropyLoss().to(device)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        for param in model.parameters():
+            param.requires_grad = False
+        # Unfreeze last layer
+        for param in model.resnet.fc.parameters():
+            param.requires_grad = True
 
         # Training loop
         start_time = time.time()
