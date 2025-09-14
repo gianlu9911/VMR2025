@@ -320,28 +320,12 @@ def fine_tune(args):
     torch.backends.cudnn.benchmark = False
 
     # Model: attempt to load pretrained backbone if requested, otherwise create ResNet50BC
-    if args.use_pretrained and args.backbone in PRETRAINED_MODELS:
+    if args.backbone in PRETRAINED_MODELS:
         print("Loading pretrained model:", args.backbone)
         model = load_pretrained_model(PRETRAINED_MODELS[args.backbone])
-        # try to replace final classification head to 2 classes
-        if hasattr(model, "resnet") and hasattr(model.resnet, "fc"):
-            in_f = model.resnet.fc.in_features
-            model.resnet.fc = nn.Linear(in_f, 2)
-        elif hasattr(model, "fc"):
-            in_f = model.fc.in_features
-            model.fc = nn.Linear(in_f, 2)
-        else:
-            # if model returns raw features, add a small classifier wrapper
-            model = nn.Sequential(model, nn.Linear(getattr(model, "num_features", 512), 2))
     else:
-        model = ResNet50BC()
-        # try to ensure final fc has 2 outputs
-        if hasattr(model, "resnet") and hasattr(model.resnet, "fc"):
-            in_f = model.resnet.fc.in_features
-            model.resnet.fc = nn.Linear(in_f, 2)
-        elif hasattr(model, "fc"):
-            in_f = model.fc.in_features
-            model.fc = nn.Linear(in_f, 2)
+        print("Creating new ResNet50BC model.")
+        model = ResNet50BC(num_classes=2)  # 2-class classification
 
     model = model.to(device)
     print("Model prepared for 2-class classification (fine-tuning).")
@@ -434,8 +418,6 @@ if __name__ == "__main__":
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--image_size', type=int, default=224)
-    parser.add_argument('--use_pretrained', action='store_true',
-                        help="If set, attempt to load model from PRETRAINED_MODELS using --backbone key")
     parser.add_argument('--backbone', type=str, default='stylegan1',
                         choices=list(PRETRAINED_MODELS.keys()) if isinstance(PRETRAINED_MODELS, dict) else ['stylegan1','stylegan2','stylegan_xl','sdv1_4'])
     parser.add_argument('--num_train_samples', type=int, default=10000,
