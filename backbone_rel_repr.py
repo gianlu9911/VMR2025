@@ -59,7 +59,10 @@ class BalancedBatchSampler(Sampler):
         self.min_class_len = min(len(idxs) for idxs in self.class_indices.values())
         self.num_batches = self.min_class_len // (batch_size // self.num_classes)
 
+
     def __iter__(self):
+        real = 0
+        fake = 0
         per_class = self.batch_size // self.num_classes
         class_iters = {cls: iter(idxs[torch.randperm(len(idxs))])
                        for cls, idxs in self.class_indices.items()}
@@ -71,10 +74,15 @@ class BalancedBatchSampler(Sampler):
                 for _ in range(per_class):
                     try:
                         selected.append(next(it).item())
+                        if cls == 0:
+                            real += 1
+                        else:
+                            fake += 1
                     except StopIteration:
                         return
                 batch.extend(selected)
             yield batch
+        print(f"Total real samples used: {real}, fake samples used: {fake}")
 
     def __len__(self):
         return self.num_batches
@@ -375,7 +383,7 @@ def fine_tune(args, backbone_name=None, fine_tuning_on=None):
 # -----------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
     parser.add_argument('--epochs', type=int, default=100)
