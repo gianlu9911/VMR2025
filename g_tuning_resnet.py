@@ -45,11 +45,20 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device, print_freq=
     return running_loss / num_samples, running_acc / num_samples
 
 
+import os
+import torch
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.metrics import confusion_matrix
+
 def evaluate(model, dataloader, criterion, device):
     model.eval()
     val_loss = 0.0
     val_acc = 0.0
     num_samples = 0
+
+    all_labels = []
+    all_preds = []
 
     with torch.no_grad():
         for images, labels in tqdm(dataloader, desc='Validation: '):
@@ -64,11 +73,38 @@ def evaluate(model, dataloader, criterion, device):
             val_acc += acc * batch_size
             num_samples += batch_size
 
+            # Store labels and predictions
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(preds.cpu().numpy())
+
+    # Compute confusion matrix
+    cm = confusion_matrix(all_labels, all_preds)
+
+    # Build save path
+    save_dir = os.path.join(
+        args.log_folder, "fine_tune", args.pretrained_model, args.finetune_on
+    )
+    os.makedirs(save_dir, exist_ok=True)
+
+    # Save confusion matrix as heatmap
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues")
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title("Confusion Matrix")
+    plt.tight_layout()
+
+    save_path = os.path.join(save_dir, "confusion_matrix.png")
+    plt.savefig(save_path)
+    plt.close()
+
     return val_loss / num_samples, val_acc / num_samples
+
 
 def fine_tune(args):
     device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
+    save_path = os.path.join('checkpoint', f'finetuned_{args.pretrained_model}_on_{args.finetune_on}_last layer.pth')    
     save_path = f'./checkpoint/finetuned_stylegan1_on_stylegan2_last layer.pth'
 
     torch.manual_seed(args.seed)
@@ -84,7 +120,7 @@ def fine_tune(args):
     fake_sd14_dir = IMAGE_DIR['sdv1_4']
     fake_xl_dir = IMAGE_DIR['stylegan_xl']
 
-    dataset = RealSynthethicDataloader(real_dir, fake_st2_dir)
+    dataset = RealSynthethicDataloader(real_dir, IMAGE_DIR[args.finetune_on], num_points=args.num_points)
     test_st1 = RealSynthethicDataloader(real_dir, fake_st1_dir, split='test_set')
     test_sd14 = RealSynthethicDataloader(real_dir, fake_sd14_dir, split='test_set')
     test_xl = RealSynthethicDataloader(real_dir, fake_xl_dir, split='test_set')
@@ -108,7 +144,7 @@ def fine_tune(args):
     else:
 
         # Load pretrained StyleGAN1
-        ckpt_path = PRETRAINED_MODELS['stylegan1']
+        ckpt_path = PRETRAINED_MODELS[args.pretrained_model]
         model = load_pretrained_model(ckpt_path)
         model.to(device)
         criterion = nn.CrossEntropyLoss().to(device)
@@ -160,6 +196,10 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument('--pretrained_model', type=str, default='stylegan1', choices=['stylegan1', 'stylegan2', 'sdv1.4'], help='Pretrained model to load')
+    parser.add_argument('--finetune_on', type=str, default='stylegan2', choices=['stylegan2', 'sdv1.4'], help='Dataset to fine-tune on')
+    parser.add_argument('--log_folder', type=str, default='./logs', help='Directory to save logs')
+    parser.add_argument('--num_points', type=int, default=None, help='Number of real/fake images to use for training/testing - None uses all available data')
     args = parser.parse_args()
 
     fine_tune(args)
