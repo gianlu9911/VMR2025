@@ -6,11 +6,17 @@ from torch.utils.data import Dataset
 from .transform import data_transforms
 
 class RealSynthethicDataloader(Dataset):
-    def __init__(self, real_dir, fake_dir, split='train_set'):
+    def __init__(self, real_dir, fake_dir, num_points = None, split='train_set'):
         rgb_real = sorted(glob(os.path.join(real_dir, split, '*.png')))
         rgb_fake = sorted(glob(os.path.join(fake_dir, split, '*.png')))
+        print(f'Number of real images: {len(rgb_real)}')
         if len(rgb_fake) == 0: # SDv1.4
             rgb_fake = sorted(glob(os.path.join(fake_dir, split, '*.jpg')))
+        print(f'Number of fake images: {len(rgb_fake)}')
+        if num_points is not None:
+            rgb_real = rgb_real[:num_points]
+            rgb_fake = rgb_fake[:num_points]
+            print(f'Using {len(rgb_real)} real and {len(rgb_fake)} fake images')
 
         assert (len(rgb_real) == len(rgb_fake))
         #
