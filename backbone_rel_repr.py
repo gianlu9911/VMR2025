@@ -1,33 +1,118 @@
+#!/usr/bin/env python3
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+import time
+import argparse
+import warnings
+warnings.filterwarnings("ignore")
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset, Sampler
 from tqdm import tqdm
-import argparse
-import time
-import numpy as np
-import csv
-import warnings
-warnings.filterwarnings("ignore")
+
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.metrics import confusion_matrix
+import matplotlib.pyplot as plt
+import pandas as pd
+
+# === Project imports - adjust these to your repo layout ===
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 
+# ---------------------------------------------
+# Device selection helper (robust)
+# ---------------------------------------------
+def get_device(arg_device=None):
+    if torch.cuda.is_available():
+        if arg_device is None:
+            return torch.device("cuda")
+        try:
+            idx = int(arg_device)
+            return torch.device(f"cuda:{idx}")
+        except:
+            return torch.device(arg_device)
+    else:
+        return torch.device("cpu")
 
-# ==========================
-# Relative Representation
-# ==========================
+# ---------------------------------------------
+# Balanced Batch Sampler (robust)
+# ---------------------------------------------
+class BalancedBatchSampler(Sampler):
+    def __init__(self, labels: torch.Tensor, batch_size: int):
+        # normalize labels to cpu long tensor
+        if isinstance(labels, torch.Tensor):
+            labels = labels.cpu().long()
+        else:
+            labels = torch.tensor(labels, dtype=torch.long)
+
+        self.labels = labels
+        self.batch_size = int(batch_size)
+        self.classes = sorted(list(torch.unique(self.labels).cpu().tolist()))
+        self.num_classes = len(self.classes)
+        assert self.batch_size % self.num_classes == 0, "batch_size must be multiple of num_classes"
+
+        # class -> indices (cpu)
+        self.class_indices = {
+            int(cls): torch.where(self.labels == cls)[0].cpu()
+            for cls in self.classes
+        }
+
+        self.per_class = self.batch_size // self.num_classes
+        # number of full balanced batches based on smallest class
+        self.min_class_len = min(len(idxs) for idxs in self.class_indices.values())
+        self.num_batches = self.min_class_len // self.per_class
+
+    def __iter__(self):
+        # build shuffled iterators
+        class_iters = {}
+        for cls, idxs in self.class_indices.items():
+            perm = idxs[torch.randperm(len(idxs))]
+            class_iters[cls] = iter(perm.tolist())
+
+        used_counts = {cls: 0 for cls in self.class_indices}
+        for _ in range(self.num_batches):
+            batch = []
+            for cls in self.classes:
+                it = class_iters[cls]
+                selected = []
+                for _ in range(self.per_class):
+                    try:
+                        selected_idx = next(it)
+                    except StopIteration:
+                        # reshuffle and continue
+                        idxs = self.class_indices[cls]
+                        perm = idxs[torch.randperm(len(idxs))]
+                        class_iters[cls] = iter(perm.tolist())
+                        it = class_iters[cls]
+                        selected_idx = next(it)
+                    selected.append(int(selected_idx))
+                    used_counts[cls] += 1
+                batch.extend(selected)
+            yield batch
+
+        print(f"[BalancedBatchSampler] Batches: {self.num_batches}, samples used per class: {used_counts}, total_used: {sum(used_counts.values())}")
+
+    def __len__(self):
+        return self.num_batches
+
+# ---------------------------------------------
+# Relative Representation and classifier
+# ---------------------------------------------
 class RelativeRepresentation(nn.Module):
-    def __init__(self, anchors):
+    def __init__(self, anchors, eps=1e-8):
         super().__init__()
-        anchors = anchors / anchors.norm(dim=1, keepdim=True)
+        anchors = anchors.float()
+        norms = anchors.norm(dim=1, keepdim=True).clamp_min(eps)
+        anchors = anchors / norms
         self.register_buffer("anchors", anchors)
 
     def forward(self, x):
-        x = F.normalize(x, p=2, dim=1)
+        x = F.normalize(x, p=2, dim=1, eps=1e-8)
         return torch.matmul(x, self.anchors.T)
 
 
@@ -43,63 +128,19 @@ class RelClassifier(nn.Module):
         rel_x = self.rel_module(x)  # raw feats -> relative feats
         return self.classifier(rel_x)
 
-
-# -----------------------------
-# Balanced Batch Sampler
-# -----------------------------
-class BalancedBatchSampler(Sampler):
-    def __init__(self, labels: torch.Tensor, batch_size: int):
-        self.labels = labels
-        self.batch_size = batch_size
-        self.num_classes = torch.unique(self.labels).numel()
-        assert batch_size % self.num_classes == 0, "batch_size must be multiple of num_classes"
-
-        self.class_indices = {cls.item(): torch.where(self.labels == cls)[0]
-                              for cls in torch.unique(self.labels)}
-        self.min_class_len = min(len(idxs) for idxs in self.class_indices.values())
-        self.num_batches = self.min_class_len // (batch_size // self.num_classes)
-
-
-    def __iter__(self):
-        real = 0
-        fake = 0
-        per_class = self.batch_size // self.num_classes
-        class_iters = {cls: iter(idxs[torch.randperm(len(idxs))])
-                       for cls, idxs in self.class_indices.items()}
-
-        for _ in range(self.num_batches):
-            batch = []
-            for cls, it in class_iters.items():
-                selected = []
-                for _ in range(per_class):
-                    try:
-                        selected.append(next(it).item())
-                        if cls == 0:
-                            real += 1
-                        else:
-                            fake += 1
-                    except StopIteration:
-                        return
-                batch.extend(selected)
-            yield batch
-        print(f"Total real samples used: {real}, fake samples used: {fake}")
-
-    def __len__(self):
-        return self.num_batches
-
-
-# -----------------------------
-# Feature Extraction
-# -----------------------------
+# ---------------------------------------------
+# Feature extraction helper
+# ---------------------------------------------
 def extract_and_save_features(backbone, dataloader, feature_path, device, split='train_set'):
     feats, labels = [], []
     print(f"Saving features to {feature_path}...")
 
     start_time = time.time()
+    backbone.eval()
     with torch.no_grad():
         for imgs, lbls in tqdm(dataloader, desc=f"Extracting {os.path.basename(feature_path)}"):
             imgs = imgs.to(device)
-            out = backbone(imgs)
+            out = backbone(imgs)  # assuming backbone returns feature vector
             feats.append(out.cpu())
             labels.append(lbls)
 
@@ -111,10 +152,82 @@ def extract_and_save_features(backbone, dataloader, feature_path, device, split=
     print(f"Features saved to {feature_path} (time: {total_time/60:.2f} min)")
     return feats, labels, total_time
 
+# ---------------------------------------------
+# Plotting utility: anchors + real + fake features
+# ---------------------------------------------
+def plot_features_with_anchors(real_feats, fake_feats, anchors, method="pca", save_path=None, subsample=5000, random_state=42):
+    """
+    real_feats, fake_feats, anchors: torch.Tensor or np.ndarray with shape [N, D]
+    method: "pca" or "tsne"
+    subsample: maximum number of total points (real+fake) to plot (anchors always included)
+    """
+    # Convert to numpy
+    if isinstance(real_feats, torch.Tensor): real_np = real_feats.cpu().numpy()
+    else: real_np = np.array(real_feats)
+    if isinstance(fake_feats, torch.Tensor): fake_np = fake_feats.cpu().numpy()
+    else: fake_np = np.array(fake_feats)
+    if isinstance(anchors, torch.Tensor): anchor_np = anchors.cpu().numpy()
+    else: anchor_np = np.array(anchors)
 
-# -----------------------------
-# Training and Evaluation
-# -----------------------------
+    # Subsample real+fake if necessary
+    n_real, n_fake, n_anchor = len(real_np), len(fake_np), len(anchor_np)
+    total_points = n_real + n_fake
+    if total_points > max(0, subsample):
+        # proportionally sample from real and fake
+        prop_real = n_real / (n_real + n_fake)
+        keep_real = int(round(subsample * prop_real))
+        keep_fake = subsample - keep_real
+        rng = np.random.default_rng(seed=random_state)
+        real_idx = rng.choice(n_real, size=max(1, keep_real), replace=False)
+        fake_idx = rng.choice(n_fake, size=max(1, keep_fake), replace=False)
+        real_np = real_np[real_idx]
+        fake_np = fake_np[fake_idx]
+        print(f"[plot] Subsampled to {len(real_np)} real and {len(fake_np)} fake points (anchors: {n_anchor})")
+    else:
+        print(f"[plot] Using all {n_real} real and {n_fake} fake points (anchors: {n_anchor})")
+
+    # Build matrix and labels
+    X = np.vstack([real_np, fake_np, anchor_np])
+    y = np.array([0]*len(real_np) + [1]*len(fake_np) + [2]*len(anchor_np))
+
+    # Reduce dimensionality
+    if method == "pca":
+        reducer = PCA(n_components=2, random_state=random_state)
+        X2 = reducer.fit_transform(X)
+    elif method == "tsne":
+        # TSNE can be slow for large N
+        print("[plot] Running t-SNE (can be slow) ...")
+        reducer = TSNE(n_components=2, perplexity=30, n_iter=1000, init="pca", random_state=random_state)
+        X2 = reducer.fit_transform(X)
+    else:
+        raise ValueError("method must be 'pca' or 'tsne'")
+
+    # Plotting
+    plt.figure(figsize=(8, 6))
+    # real
+    idx_real = y == 0
+    plt.scatter(X2[idx_real, 0], X2[idx_real, 1], marker='o', s=8, alpha=1, label='Real (eval)')
+    # fake
+    idx_fake = y == 1
+    plt.scatter(X2[idx_fake, 0], X2[idx_fake, 1], marker='o', s=8, alpha=1, label='Fake (eval)')
+    # anchors (make them visually prominent)
+    idx_anchor = y == 2
+    plt.scatter(X2[idx_anchor, 0], X2[idx_anchor, 1], alpha = 0.5, marker='*', s=120, edgecolor='k', linewidth=0.6, label='Anchors (train real)')
+
+    plt.legend()
+    plt.title(f"Feature visualization ({method.upper()})")
+    plt.tight_layout()
+
+    if save_path is not None:
+        plt.savefig(save_path, dpi=200)
+        plt.close()
+        print(f"[plot] Saved feature plot to {save_path}")
+    else:
+        plt.show()
+
+# ---------------------------------------------
+# Training and evaluation helpers
+# ---------------------------------------------
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     running_loss, running_acc, num_samples = 0.0, 0.0, 0
@@ -137,38 +250,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
 
     return running_loss / num_samples, running_acc / num_samples
 
-
-from sklearn.metrics import confusion_matrix
-import matplotlib.pyplot as plt
-import seaborn as sns
-import os
-
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import LabelEncoder
-import torch
-
-import pandas as pd
-
-def evaluate(model, dataloader, criterion, device, rel_module=None, backbone_name="stylegan1", 
-             test_name="test_set", save_dir="./logs"):
-    """
-    Evaluate model, compute confusion matrix, relative feature statistics, and save CSV.
-
-    Args:
-        model: Classifier model
-        dataloader: DataLoader for features
-        criterion: Loss function
-        device: torch device
-        rel_module: RelativeRepresentation module (optional, for cosine vectors)
-        test_name: Name of the dataset (used for saving CM and CSV)
-        save_dir: Directory to save confusion matrix and CSV
-    """
-    import os
-    from sklearn.metrics import confusion_matrix
-    import matplotlib.pyplot as plt
-    import seaborn as sns
-
+def evaluate(model, dataloader, criterion, device, rel_module=None, test_name="test_set", save_dir="./logs"):
     model.eval()
     val_loss, val_acc, num_samples = 0.0, 0.0, 0
     all_preds, all_labels, all_feats = [], [], []
@@ -196,13 +278,11 @@ def evaluate(model, dataloader, criterion, device, rel_module=None, backbone_nam
                 rel_feat = rel_module(features).cpu()  # [batch, num_anchors]
                 all_feats.append(rel_feat)
 
-    # Aggregate
     all_preds = torch.cat(all_preds).numpy()
     all_labels = torch.cat(all_labels).numpy()
-    if rel_module is not None:
-        all_feats = torch.cat(all_feats)  # [num_samples, num_anchors]
 
-        # Calcola statistiche per feature
+    if rel_module is not None and len(all_feats) > 0:
+        all_feats = torch.cat(all_feats)  # [N, num_anchors]
         mean_sim = all_feats.mean(dim=1).numpy()
         std_sim  = all_feats.std(dim=1).numpy()
         max_sim  = all_feats.max(dim=1)[0].numpy()
@@ -221,18 +301,35 @@ def evaluate(model, dataloader, criterion, device, rel_module=None, backbone_nam
         df_stats.to_csv(csv_path, index=False)
         print(f"Relative feature statistics saved to {csv_path}")
 
-    # Confusion matrix
     cm = confusion_matrix(all_labels, all_preds)
     plt.figure(figsize=(5,4))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                xticklabels=["Real","Fake"], yticklabels=["Real","Fake"])
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues, alpha=0.85)
+    plt.colorbar()
+
+    # class names
+    tick_labels = ["Real", "Fake"] if cm.shape == (2,2) else list(range(cm.shape[0]))
+    plt.xticks(np.arange(len(tick_labels)), tick_labels, rotation=45)
+    plt.yticks(np.arange(len(tick_labels)), tick_labels)
     plt.xlabel("Predicted")
     plt.ylabel("True")
     plt.title(f"Confusion Matrix - {test_name}")
+
+    # annotate each cell with counts
+    thresh = cm.max() / 2.0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            count = cm[i, j]
+            plt.text(j, i, str(count),
+                    ha="center", va="center",
+                    color="white" if count > thresh else "black",
+                    fontsize=10, fontweight="bold")
+
+    plt.tight_layout()
     cm_path = os.path.join(save_dir, f"confusion_matrix_{test_name}.png")
-    plt.savefig(cm_path)
+    plt.savefig(cm_path, dpi=200)
     plt.close()
     print(f"Confusion matrix saved to {cm_path}")
+
 
     avg_loss = val_loss / num_samples
     avg_acc = val_acc / num_samples
@@ -240,53 +337,43 @@ def evaluate(model, dataloader, criterion, device, rel_module=None, backbone_nam
 
     return avg_loss, avg_acc
 
-
-
-
-# -----------------------------
-# Fine-Tuning Pipeline
-# -----------------------------
+# ---------------------------------------------
+# Fine-tuning pipeline (main)
+# ---------------------------------------------
 def fine_tune(args, backbone_name=None, fine_tuning_on=None):
-    # ---------------- Device ----------------
-    device = torch.device(f'cuda:{args.device}' if torch.cuda.is_available() else 'cpu')
+    device = get_device(args.device)
     print(f"Using device: {device}")
 
     backbone_name = backbone_name or args.backbone
     fine_tuning_on = fine_tuning_on or args.fine_tuning_on
 
-    # ---------------- Directories ----------------
     feature_dir = f"./feature_{backbone_name}"
     checkpoint_dir = "./checkpoint"
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # ---------------- Seeds ----------------
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
-    # ---------------- Backbone ----------------
+    # Backbone
     backbone = load_pretrained_model(PRETRAINED_MODELS[backbone_name])
     backbone.resnet.fc = nn.Identity()
     backbone.to(device)
     backbone.eval()
 
-    # ---------------- Training dataset ----------------
+    # Dataset directories
     real_dir = IMAGE_DIR['real']
-    #real_dir = os.path.join(real_dir, 'train_set')
     fake_dir = IMAGE_DIR[fine_tuning_on]
-    #fake_dir = os.path.join(fake_dir, 'train_set')
-
-    #print(f"Number of real images: {len(os.listdir(real_dir))}, fake images: {len(os.listdir(fake_dir))}")
 
     dataset = RealSynthethicDataloader(real_dir, fake_dir)
     train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True,
                               num_workers=args.num_workers)
 
-    # ---------------- Extract features ----------------
+    # Extract / load features
     full_train_feat_file = os.path.join(feature_dir, f"real_vs_{fine_tuning_on}_features.pt")
-    if not os.path.exists(full_train_feat_file):
+    if args.force_recompute_features or not os.path.exists(full_train_feat_file):
         print("Extracting full training features...")
         feats_full, labels_full, feat_time_full = extract_and_save_features(backbone, train_loader,
                                                                             full_train_feat_file, device)
@@ -296,7 +383,7 @@ def fine_tune(args, backbone_name=None, fine_tuning_on=None):
         feat_time_full = 0.0
         print("Loaded cached full training features")
 
-    # ---------------- Subsample by number of samples ----------------
+    # Subsample training samples if requested
     num_train_samples = getattr(args, "num_train_samples", None)
     if num_train_samples is not None and num_train_samples < len(feats_full):
         indices = torch.randperm(len(feats_full))[:num_train_samples]
@@ -306,31 +393,47 @@ def fine_tune(args, backbone_name=None, fine_tuning_on=None):
         feats = feats_full
         labels = labels_full
 
-    print(f"Using {len(feats)} training samples")
-    print(f"with real: {int((labels==0).sum())}, fake: {int((labels==1).sum())}")
+    print(f"Using {len(feats)} training samples (real: {(labels==0).sum().item()}, fake: {(labels==1).sum().item()})")
 
-    # ---------------- Anchors ----------------
+    # Anchors (take from real training features only, allow sampling WITH replacement
     real_mask = labels == 0
     real_feats = feats[real_mask]
-    if args.num_anchors is not None and len(real_feats) > args.num_anchors:
-        perm = torch.randperm(len(real_feats))[:args.num_anchors]
-        anchors = real_feats[perm]
+    if real_feats.size(0) == 0:
+        raise RuntimeError("No real training features available to form anchors. Check your dataset / subsampling (num_train_samples).")
+
+    if args.num_anchors is not None:
+        # create a deterministic generator seeded by args.seed
+        rng = torch.Generator().manual_seed(args.seed)
+        num_requested = int(args.num_anchors)
+        if num_requested > len(real_feats):
+            print(f"[warning] Requested {num_requested} anchors but only {len(real_feats)} unique real samples available. Sampling WITH replacement from real set.")
+            # sample with replacement
+            idx = torch.randint(low=0, high=len(real_feats), size=(num_requested,), generator=rng)
+        else:
+            # sample without replacement
+            idx = torch.randperm(len(real_feats), generator=rng)[:num_requested]
+        anchors = real_feats[idx]
     else:
         anchors = real_feats
+
+    if anchors.size(0) == 0:
+        raise RuntimeError("Anchors is empty after selection. Aborting.")
+
     print(f"Using {anchors.size(0)} anchors for relative representation")
+
     rel_module = RelativeRepresentation(anchors.to(device))
 
-    # ---------------- Dataset + Sampler ----------------
+    # Dataset + Sampler for training classifier
     feat_dataset = TensorDataset(feats, labels)
     sampler = BalancedBatchSampler(labels, batch_size=args.batch_size)
     feat_loader = DataLoader(feat_dataset, batch_sampler=sampler)
 
-    # ---------------- Classifier ----------------
+    # Classifier
     classifier = RelClassifier(rel_module, anchors.size(0), num_classes=2).to(device)
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=args.lr)
 
-    # ---------------- Training Loop ----------------
+    # Training loop
     start_time = time.time()
     for epoch in range(args.epochs):
         train_loss, train_acc = train_one_epoch(classifier, feat_loader, criterion, optimizer, device)
@@ -338,13 +441,12 @@ def fine_tune(args, backbone_name=None, fine_tuning_on=None):
     train_time = time.time() - start_time
     print(f"Training completed in {train_time/60:.2f} minutes")
 
-    # ---------------- Save Checkpoint ----------------
     checkpoint_path = os.path.join(checkpoint_dir,
                                    f'finetuned_rel_{backbone_name}_on_{fine_tuning_on}_samples{len(feats)}.pth')
     torch.save({'state_dict': classifier.state_dict()}, checkpoint_path)
     print(f"Model saved to {checkpoint_path}")
 
-    # ---------------- Evaluate Test Sets ----------------
+    # Prepare test datasets
     dataloaders_test = {
         "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
         "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
@@ -355,47 +457,71 @@ def fine_tune(args, backbone_name=None, fine_tuning_on=None):
     test_results = {}
     for name, dataset in dataloaders_test.items():
         feat_file_test = os.path.join(feature_dir, f"test_{name}_features.pt")
-        print(f"Saving test features to {feat_file_test}...")
+        print(f"Preparing test features for {name} -> {feat_file_test}")
 
-        if os.path.exists(feat_file_test):
-            data = torch.load(feat_file_test)
-            feats_test, labels_test = data["features"], data["labels"]
-            feat_time = 0.0
-        else:
+        if args.force_recompute_features or not os.path.exists(feat_file_test):
             loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False,
                                 num_workers=args.num_workers)
             feats_test, labels_test, feat_time = extract_and_save_features(backbone, loader,
                                                                           feat_file_test, device, split='test_set')
+        else:
+            data = torch.load(feat_file_test)
+            feats_test, labels_test = data["features"], data["labels"]
+            feat_time = 0.0
+            print("Loaded cached test features")
 
+        # Plot anchors + eval real + eval fake
+        # anchors is available (torch tensor on device) -> move to cpu for plotting
+        anchors_cpu = anchors.cpu()
+        real_mask_eval = (labels_test == 0)
+        fake_mask_eval = (labels_test == 1)
+        real_feats_eval = feats_test[real_mask_eval]
+        fake_feats_eval = feats_test[fake_mask_eval]
+
+        plot_save_path = os.path.join("./logs", f"feature_plot_{name}_{args.plot_method}.png")
+        os.makedirs("./logs", exist_ok=True)
+        plot_features_with_anchors(real_feats_eval, fake_feats_eval, anchors_cpu,
+                                   method=args.plot_method, save_path=plot_save_path,
+                                   subsample=args.plot_subsample)
+
+        # Evaluate classifier on test features
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
 
         loss, acc = evaluate(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, backbone_name=backbone_name, test_name=name)
+                             rel_module=rel_module, test_name=name, save_dir="./logs")
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     return test_results
 
-
-
-# -----------------------------
-# Main
-# -----------------------------
+# ---------------------------------------------
+# Main CLI
+# ---------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
     parser.add_argument('--epochs', type=int, default=100)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_samples', type=int, default=None,
-                        help="Numero di campioni di addestramento da utilizzare. Se None, usa tutti i campioni disponibili.")
+                        help="Number of training samples to use. If None, use all available samples.")
     parser.add_argument('--fine_tuning_on', type=str, default='stylegan2',
                         choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4'])
     parser.add_argument('--backbone', type=str, default='stylegan1',
                         choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4'])
-    parser.add_argument('--num_anchors', type=int, default=1000,
-                        help="Numero massimo di feature reali da usare come ancore")
+    parser.add_argument('--num_anchors', type=int, default=100,
+                        help="Exact number of real features to use as anchors; if greater than available reals, sampling with replacement is used.")
+    parser.add_argument('--plot_method', type=str, default='pca', choices=['pca', 'tsne'],
+                        help="Dimensionality reduction method for plotting (pca or tsne)")
+    parser.add_argument('--plot_subsample', type=int, default=5000,
+                        help="Max number of eval points (real+fake) to plot (anchors always included)")
+    parser.add_argument('--force_recompute_features', action='store_true',
+                        help="Force recomputation of saved features")
     args = parser.parse_args()
-    fine_tune(args)
+
+    results = fine_tune(args)
+    print("All test results:")
+    for k, v in results.items():
+        print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")
