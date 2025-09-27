@@ -1,0 +1,5 @@
+task,real_vs_stylegan1_acc,real_vs_stylegan2_acc,real_vs_styleganxl_acc,real_vs_sdv1_4_acc
+stylegan1,0.99845,0.5639,0.5048,0.53875
+stylegan2,0.9739,0.95435,0.76905,0.8367
+stylegan_xl,0.9409,0.93065,0.9059,0.81315
+sdv1_4,0.94655,0.93005,0.77025,0.92595
