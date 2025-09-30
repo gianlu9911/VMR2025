@@ -105,7 +105,7 @@ def fine_tune(args):
     device = torch.device('cuda:{}'.format(args.device) if torch.cuda.is_available() else 'cpu')
     print(f'Using device: {device}')
     save_path = os.path.join('checkpoint', f'finetuned_{args.pretrained_model}_on_{args.finetune_on}_last layer.pth')    
-    save_path = f'./checkpoint/finetuned_stylegan1_on_stylegan2_last layer.pth'
+    save_path = f'./checkpoint/finetuned_stylegan1_on_stylegan2.pth'
 
     torch.manual_seed(args.seed)
     import numpy as np
