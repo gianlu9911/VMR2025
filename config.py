@@ -10,13 +10,12 @@ PRETRAINED_MODELS = {
     'sd1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
     'sdv1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
 }
-
+# SG1 -> SG2 -> SDV1.4 -> SG3 -> SGXL -> SD2.1
 IMAGE_DIR = {
     'real'      : os.path.join(DATASET_DIR, 'images1024x1024'),
     'stylegan1' : os.path.join(DATASET_DIR, 'generated', 'stylegan1-psi-0.5', 'images1024x1024'),
     'stylegan2' : os.path.join(DATASET_DIR, 'generated', 'stylegan2-psi-0.5', 'images1024x1024'),
-    'stylegan_xl' : os.path.join(DATASET_DIR, 'generated', 'styleganxl-psi-0.5', 'images1024x1024'),
-    'styleganxl' : os.path.join(DATASET_DIR, 'generated', 'styleganxl-psi-0.5', 'images1024x1024'),
-    'sdv14'    : os.path.join(DATASET_DIR, 'generated', 'sdv1_4', 'images1024x1024'),
     'sdv1_4'    : os.path.join(DATASET_DIR, 'generated', 'sdv1_4', 'images1024x1024'),
+    'stylegan3' : os.path.join(DATASET_DIR, 'generated', 'stylegan3-psi-0.5', 'images1024x1024'),
+    'stylegan_xl' : os.path.join(DATASET_DIR, 'generated', 'styleganxl-psi-0.5', 'images1024x1024'),
 }
