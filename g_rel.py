@@ -266,7 +266,7 @@ def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_
         print("Loaded cached full training features")
 
     # Subsample training samples if requested
-    num_train_samples = getattr(args, "num_train_samples", None)
+    num_train_samples = num_points
     if num_train_samples is not None and num_train_samples < len(feats_full):
         indices = torch.randperm(len(feats_full))[:num_train_samples]
         feats = feats_full[indices]
@@ -404,7 +404,7 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--num_train_samples', type=int, default=None,
+    parser.add_argument('--num_train_samples', type=int, default=100,
                         help="Number of training samples to use. If None, use all available samples.")
     parser.add_argument('--fine_tuning_on', type=str, default='stylegan1',
                         choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4'])
