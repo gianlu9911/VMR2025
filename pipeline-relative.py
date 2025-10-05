@@ -32,6 +32,7 @@ def pipeline(backbone_name, task, seed, batch_size, num_workers, num_points, num
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(seed)
     np.random.seed(seed)
+    class_weights = None
     print(f"Using device: {device}")
     in_folder = "num_train_samples_"+str(num_points) if num_points is not None else "all_train_samples"
     in_folder = in_folder + "_num_anchors_"+str(num_anchors)
@@ -45,9 +46,11 @@ def pipeline(backbone_name, task, seed, batch_size, num_workers, num_points, num
 
     
         print(f"\n=== Task: {t} ===")
-        res, checkpoint = fine_tune(backbone_name, t, seed, batch_size, num_workers, num_points, num_anchors, saved_accuracy_path, lr, epochs,
-            checkpoint_path=checkpoint_path, device=device, feature_path=feature_path, force_recompute_features=force_recompute_features)
-        backbone_name = checkpoint
+        results, checkpoint = fine_tune(backbone_name=backbone_name, fine_tuning_on=t, seed=seed, batch_size=batch_size, 
+                                        num_workers=num_workers, num_points=num_points, num_anchors=num_anchors, 
+                                        saved_accuracy_path=saved_accuracy_path, lr=lr, epochs=epochs, feature_path=feature_path,
+                checkpoint_path=checkpoint_path, device=device,force_recompute_features=force_recompute_features, classifier_weight_path=class_weights) 
+        class_weights = checkpoint
         
     return 0
 
@@ -56,7 +59,7 @@ if __name__ == "__main__":
     parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_samples', type=int, default=None,
