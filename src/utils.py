@@ -144,3 +144,31 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
         num_samples += batch_size
 
     return running_loss / num_samples, running_acc / num_samples
+
+# ---------------------------------------------
+# Relative Representation and classifier
+# ---------------------------------------------
+class RelativeRepresentation(nn.Module):
+    def __init__(self, anchors, eps=1e-8):
+        super().__init__()
+        anchors = anchors.float()
+        norms = anchors.norm(dim=1, keepdim=True).clamp_min(eps)
+        anchors = anchors / norms
+        self.register_buffer("anchors", anchors)
+
+    def forward(self, x):
+        x = F.normalize(x, p=2, dim=1, eps=1e-8)
+        return torch.matmul(x, self.anchors.T)
+
+
+class RelClassifier(nn.Module):
+    def __init__(self, rel_module, in_dim, num_classes=2):
+        super().__init__()
+        self.rel_module = rel_module
+        self.classifier = nn.Linear(in_dim, num_classes)
+        nn.init.xavier_uniform_(self.classifier.weight)
+        nn.init.zeros_(self.classifier.bias)
+
+    def forward(self, x):
+        rel_x = self.rel_module(x)  # raw feats -> relative feats
+        return self.classifier(rel_x)

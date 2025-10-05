@@ -24,7 +24,7 @@ import pandas as pd
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import extract_and_save_features, train_one_epoch, plot_features_with_anchors
+from src.utils import extract_and_save_features, train_one_epoch, plot_features_with_anchors, RelativeRepresentation, RelClassifier
 
 # ---------------------------------------------
 # Device selection helper (robust)
@@ -102,33 +102,7 @@ class BalancedBatchSampler(Sampler):
     def __len__(self):
         return self.num_batches
 
-# ---------------------------------------------
-# Relative Representation and classifier
-# ---------------------------------------------
-class RelativeRepresentation(nn.Module):
-    def __init__(self, anchors, eps=1e-8):
-        super().__init__()
-        anchors = anchors.float()
-        norms = anchors.norm(dim=1, keepdim=True).clamp_min(eps)
-        anchors = anchors / norms
-        self.register_buffer("anchors", anchors)
 
-    def forward(self, x):
-        x = F.normalize(x, p=2, dim=1, eps=1e-8)
-        return torch.matmul(x, self.anchors.T)
-
-
-class RelClassifier(nn.Module):
-    def __init__(self, rel_module, in_dim, num_classes=2):
-        super().__init__()
-        self.rel_module = rel_module
-        self.classifier = nn.Linear(in_dim, num_classes)
-        nn.init.xavier_uniform_(self.classifier.weight)
-        nn.init.zeros_(self.classifier.bias)
-
-    def forward(self, x):
-        rel_x = self.rel_module(x)  # raw feats -> relative feats
-        return self.classifier(rel_x)
 
 
 def evaluate(model, dataloader, criterion, device, rel_module=None, test_name="test_set", save_dir="./logs"):
@@ -221,16 +195,16 @@ def evaluate(model, dataloader, criterion, device, rel_module=None, test_name="t
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
 # ---------------------------------------------
-def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_points, num_anchors, saved_accuracy_path,
-    checkpoint_path=None, force_recompute_features=False):
-    device = get_device(args.device)
+def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_points, num_anchors, saved_accuracy_path, lr, epochs, feature_path=None,
+    checkpoint_path=None, device=None,force_recompute_features=False):
+    device = get_device(device)
     print(f"Using device: {device}")
 
-    backbone_name = backbone_name or args.backbone
-    fine_tuning_on = fine_tuning_on or args.fine_tuning_on
+    backbone_name = backbone_name 
+    fine_tuning_on = fine_tuning_on 
 
-    feature_dir = f"./feature_{backbone_name}"
-    checkpoint_dir = checkpoint_path or f"./checkpoints_rel_{backbone_name}_on_{fine_tuning_on}"
+    feature_dir = feature_path or f"./feature_{backbone_name}" 
+    checkpoint_dir = checkpoint_path 
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -240,7 +214,10 @@ def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_
     torch.backends.cudnn.benchmark = False
 
     # Backbone
-    backbone = load_pretrained_model(PRETRAINED_MODELS[backbone_name])
+    if backbone_name in PRETRAINED_MODELS:
+        backbone = load_pretrained_model(PRETRAINED_MODELS[backbone_name])
+    else:
+        backbone = load_pretrained_model(backbone_name)
     backbone.resnet.fc = nn.Identity()
     backbone.to(device)
     backbone.eval()
@@ -255,7 +232,7 @@ def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_
 
     # Extract / load features
     full_train_feat_file = os.path.join(feature_dir, f"real_vs_{fine_tuning_on}_features.pt")
-    if args.force_recompute_features or not os.path.exists(full_train_feat_file):
+    if force_recompute_features or not os.path.exists(full_train_feat_file):
         print("Extracting full training features...")
         feats_full, labels_full, feat_time_full = extract_and_save_features(backbone, train_loader,
                                                                             full_train_feat_file, device)
@@ -313,13 +290,13 @@ def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_
     # Classifier
     classifier = RelClassifier(rel_module, anchors.size(0), num_classes=2).to(device)
     criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.Adam(classifier.parameters(), lr=args.lr)
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
 
     # Training loop
     start_time = time.time()
-    for epoch in range(args.epochs):
+    for epoch in range(epochs):
         train_loss, train_acc = train_one_epoch(classifier, feat_loader, criterion, optimizer, device)
-        print(f"Epoch [{epoch+1}/{args.epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
+        print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
     train_time = time.time() - start_time
     print(f"Training completed in {train_time/60:.2f} minutes")
 
@@ -342,7 +319,7 @@ def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_
         feat_file_test = os.path.join(feature_dir, f"test_{name}_features.pt")
         print(f"Preparing test features for {name} -> {feat_file_test}")
 
-        if args.force_recompute_features or not os.path.exists(feat_file_test):
+        if force_recompute_features or not os.path.exists(feat_file_test):
             loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                                 num_workers=num_workers)
             feats_test, labels_test, feat_time = extract_and_save_features(backbone, loader,
@@ -367,7 +344,7 @@ def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_
 
         # Evaluate classifier on test features
         test_dataset = TensorDataset(feats_test, labels_test)
-        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
         loss, acc = evaluate(classifier, test_loader, criterion, device,
                              rel_module=rel_module, test_name=name, save_dir="./logs/confusion_matrices")
@@ -388,29 +365,30 @@ def fine_tune(backbone_name, fine_tuning_on, seed, batch_size, num_workers, num_
             writer.writerow(["fine_tuning_on"] + list(test_results.keys()))
 
         # Scrivi la riga con le accuratezze
-        writer.writerow([args.fine_tuning_on] + [test_results[name]["acc"] for name in test_results])
+        writer.writerow([fine_tuning_on] + [test_results[name]["acc"] for name in test_results])
 
 
-    return test_results
+    return test_results, checkpoint_path
 
 # ---------------------------------------------
 # Main CLI
 # ---------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=500)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--num_train_samples', type=int, default=100,
+    parser.add_argument('--device', type=str, default='0')
+    parser.add_argument('--num_train_samples', type=int, default=150,
                         help="Number of training samples to use. If None, use all available samples.")
-    parser.add_argument('--fine_tuning_on', type=str, default='stylegan1',
-                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4'])
+    parser.add_argument('--fine_tuning_on', type=str, default='stylegan2',
+                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4','stylegan3'])
     parser.add_argument('--backbone', type=str, default='stylegan1',
-                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4'])
-    parser.add_argument('--num_anchors', type=int, default=100,
+                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4','stylegan3'])
+    parser.add_argument('--num_anchors', type=int, default=5000,
                         help="Exact number of real features to use as anchors; if greater than available reals, sampling with replacement is used.")
     #parser.add_argument('--plot_method', type=str, default='pca', choices=['pca', 'tsne'],help="Dimensionality reduction method for plotting (pca or tsne)")
     #parser.add_argument('--plot_subsample', type=int, default=100,help="Max number of eval points (real+fake) to plot (anchors always included)")
@@ -418,9 +396,9 @@ if __name__ == "__main__":
                         help="Force recomputation of saved features")
     args = parser.parse_args()
 
-    results = fine_tune(backbone_name=args.backbone, fine_tuning_on=args.fine_tuning_on, seed= args.seed, saved_accuracy_path="./logs/test_accuracies.csv",
+    results,_ = fine_tune(backbone_name=args.backbone, fine_tuning_on=args.fine_tuning_on, seed= args.seed, saved_accuracy_path="./logs/test_accuracies.csv",
         batch_size=args.batch_size, num_workers=args.num_workers, num_points=args.num_train_samples, num_anchors=args.num_anchors, 
-        checkpoint_path=None, force_recompute_features=args.force_recompute_features)
+        checkpoint_path='checkpoints_rel_stylegan1_on_stylegan2', device=args.device,force_recompute_features=args.force_recompute_features)
     print("All test results:")
     for k, v in results.items():
         print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")
