@@ -254,13 +254,14 @@ def train_and_eval(args):
 
     checkpoint_dir = "./checkpoint_finetune"
     os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs("./logs_finetuning", exist_ok=True)
+    os.makedirs("./logs_lwf", exist_ok=True)
 
     test_domains = {
         "real_vs_stylegan1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan1'], split='test_set'),
         "real_vs_stylegan2": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan2'], split='test_set'),
+        "real_vs_sdv1_4": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv1_4'], split='test_set'),
+        "real_vs_stylegan3": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan3'], split='test_set'),
         "real_vs_styleganxl": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "real_vs_sdv1_4": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv1_4'], split='test_set')
     }
 
     results = []
@@ -434,7 +435,7 @@ def train_and_eval(args):
 
         results.append(row)
         df = pd.DataFrame(results)
-        df.to_csv(os.path.join("./logs_finetuning", "sequential_finetune_results.csv"), index=False)
+        df.to_csv(os.path.join("./logs_lwf", "sequential_lwf_results.csv"), index=False)
 
     print("All tasks finished")
     return pd.DataFrame(results)
@@ -444,11 +445,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--initial_backbone', type=str, default='stylegan1', choices=list(PRETRAINED_MODELS.keys()))
-    parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,stylegan_xl,sdv1_4')
+    parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl')
     parser.add_argument('--train_fc', action='store_true', help='If set, freeze backbone and train only final classifier layer')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--epochs_per_task', type=int, default=10)
+    parser.add_argument('--epochs_per_task', type=int, default=1)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
     parser.add_argument('--classifier_lr', type=float, default=1e-3)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
