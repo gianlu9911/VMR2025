@@ -119,17 +119,20 @@ def fine_tune(args):
     fake_st1_dir = IMAGE_DIR['stylegan1']
     fake_sd14_dir = IMAGE_DIR['sdv1_4']
     fake_xl_dir = IMAGE_DIR['stylegan_xl']
+    fake_st3_dir = IMAGE_DIR['stylegan3']
 
     dataset = RealSynthethicDataloader(real_dir, IMAGE_DIR[args.finetune_on], num_points=args.num_points)
     test_st1 = RealSynthethicDataloader(real_dir, fake_st1_dir, split='test_set')
     test_sd14 = RealSynthethicDataloader(real_dir, fake_sd14_dir, split='test_set')
     test_xl = RealSynthethicDataloader(real_dir, fake_xl_dir, split='test_set')
     test_st2 = RealSynthethicDataloader(real_dir, fake_st2_dir, split='test_set')
+    test_st3 = RealSynthethicDataloader(real_dir, fake_st3_dir, split='test_set')
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     dataloader_st1 = DataLoader(test_st1, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dataloader_sd14 = DataLoader(test_sd14, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dataloader_xl = DataLoader(test_xl, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dataloader_st2 = DataLoader(test_st2, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    dataloader_st3 = DataLoader(test_st3, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     
 
@@ -180,6 +183,7 @@ def fine_tune(args):
         "real vs stylegan2": dataloader_st2,
         "real vs styleganxl": dataloader_xl,
         "real vs sdv1_4": dataloader_sd14,
+        "real va stylegan3": dataloader_st3,  # Assuming stylegan3 uses the same loader as stylegan2 for this example
     }
 
     for name, loader in test_sets.items():
@@ -190,7 +194,7 @@ def fine_tune(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
     parser.add_argument('--epochs', type=int, default=10)

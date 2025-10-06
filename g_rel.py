@@ -41,21 +41,14 @@ def fine_tune(
     plot_subsample: int = 5000,
     force_recompute_features: bool = False,
     eval_csv_path: str = None,
+    # NEW: checkpoint handling
+    load_checkpoint: bool = False,
+    checkpoint_file: str = "checkpoint/checkpoint_HELLO.pth",
 ):
     """Fine-tune relative-representation classifier.
 
-    This function no longer depends on an argparse.Namespace. All configuration
-    is provided via keyword arguments so it can be called directly from code.
-
-    If `eval_csv_path` is provided (or left as None), evaluation results will be
-    appended to ./logs/eval_results.csv with the header:
-
-    fine_tuning_on,real_vs_stylegan1,real_vs_stylegan2,real_vs_sdv1_4,real_vs_stylegan3,real_vs_styleganxl
-
-    Each call to fine_tune appends a single row where the first column is the
-    `fine_tuning_on` dataset name and the remaining columns are the test
-    accuracies (formatted with 5 decimal places). Missing test entries are
-    left empty.
+    load_checkpoint: if True, attempt to load checkpoint_file into the classifier before training.
+    checkpoint_file: path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)
 
     Returns:
         dict: test_results mapping dataset name -> {loss, acc, feat_time}
@@ -67,6 +60,9 @@ def fine_tune(
     checkpoint_dir = "./checkpoint"
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
+    # ensure directory for custom checkpoint_file exists
+    checkpoint_file_dir = os.path.dirname(checkpoint_file) if os.path.dirname(checkpoint_file) != '' else checkpoint_dir
+    os.makedirs(checkpoint_file_dir, exist_ok=True)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -150,6 +146,38 @@ def fine_tune(
 
     # Classifier
     classifier = RelClassifier(rel_module, anchors.size(0), num_classes=2).to(device)
+
+    # NEW: load checkpoint into classifier if requested
+    if load_checkpoint:
+        if os.path.exists(checkpoint_file):
+            try:
+                print(f"Loading checkpoint from {checkpoint_file} ...")
+                checkpoint = torch.load(checkpoint_file, map_location=device)
+                # support both {'state_dict': ...} and raw state_dict saved previously
+                if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
+                    classifier.load_state_dict(checkpoint['state_dict'])
+                elif isinstance(checkpoint, dict):
+                    # Possibly other keys; try to find state_dict-like key
+                    if 'model_state_dict' in checkpoint:
+                        classifier.load_state_dict(checkpoint['model_state_dict'])
+                    else:
+                        # If dict looks like a state_dict already (mapping of param names), try to load directly
+                        try:
+                            classifier.load_state_dict(checkpoint)
+                        except Exception as e:
+                            print(f"Warning: couldn't interpret checkpoint dict format: {e}. Continuing without loading.")
+                else:
+                    # checkpoint might be a raw state_dict or other object
+                    try:
+                        classifier.load_state_dict(checkpoint)
+                    except Exception as e:
+                        print(f"Warning: failed to load checkpoint: {e}. Continuing without loading.")
+                print("Checkpoint loaded into classifier.")
+            except Exception as e:
+                print(f"Failed to load checkpoint from {checkpoint_file}: {e}. Continuing without loading.")
+        else:
+            print(f"Checkpoint file {checkpoint_file} not found. Continuing without loading.")
+
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
 
@@ -161,8 +189,9 @@ def fine_tune(
     train_time = time.time() - start_time
     print(f"Training completed in {train_time/60:.2f} minutes")
 
-    checkpoint_path = os.path.join(checkpoint_dir,
-                                   f'finetuned_rel_{backbone}_on_{fine_tuning_on}_samples{len(feats)}.pth')
+    # Save checkpoint to the specified checkpoint_file (USER REQUEST)
+    checkpoint_path = checkpoint_file
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
     torch.save({'state_dict': classifier.state_dict()}, checkpoint_path)
     print(f"Model saved to {checkpoint_path}")
 
@@ -272,6 +301,13 @@ if __name__ == "__main__":
                         help="Force recomputation of saved features")
     parser.add_argument('--eval_csv_path', type=str, default=None,
                         help='Optional path to evaluation CSV (default: ./logs/eval_results.csv)')
+
+    # NEW CLI args for checkpoint load/save
+    parser.add_argument('--load_checkpoint', action='store_true',
+                        help="If set, attempt to load weights from --checkpoint_file before training (default: False).")
+    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO.pth',
+                        help="Path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)")
+
     args = parser.parse_args()
 
     # pass explicit keyword args to the function (no argparse.Namespace usage inside fine_tune)
