@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import numpy as np
 import torch
@@ -34,8 +34,8 @@ def run_param_sweep(
     num_anchors_list,
     order=None,
     base_checkpoint_template: str = "checkpoint/checkpoint_HELLO_{backbone}.pth",
-    force_recompute_features_first_run: bool = True,
-    remove_existing_checkpoint_before_run: bool = True,
+    force_recompute_features_first_run: bool = False,
+    remove_existing_checkpoint_before_run: bool = False,
     verbose: bool = True,
     **fine_tune_kwargs
 ):
@@ -128,12 +128,12 @@ if __name__ == "__main__":
     sweep_results = run_param_sweep(
         backbones=['stylegan1'],  # o passa più backbone
         num_train_samples_list=[50, 100, None],   # None == use all samples
-        num_anchors_list=[1000, 5000],
-        epochs=5,                # per test veloce; metti quello che ti serve
-        batch_size=32,
+        num_anchors_list=[100, 5000],
+        epochs=300,                # per test veloce; metti quello che ti serve
+        batch_size=16,
         num_workers=8,
         seed=42,
-        force_recompute_features_first_run=True,
+        force_recompute_features_first_run=False,
         verbose=True,
     )
 

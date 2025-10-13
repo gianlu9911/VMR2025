@@ -270,7 +270,7 @@ def fine_tune(
             else:
                 row.append('')
         f.write(','.join(row) + '\n')
-    return test_results
+    return test_results, anchors
 
 
 # ---------------------------------------------

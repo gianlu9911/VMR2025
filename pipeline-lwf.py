@@ -2,23 +2,6 @@
 """
 Sequential fine-tuning (images-only) - NO separate head / LwF support
 
-Notes:
-- The backbone is expected to produce logits directly (keep its final classifier).
-- Learning without Forgetting (LwF) is implemented by keeping a frozen copy of the
-  previous-task backbone (teacher) and adding a distillation loss on its logits.
-- --train_fc now means: freeze all backbone parameters except the final classifier
-  (e.g., `backbone.resnet.fc` for ResNet wrappers). This lets you train only the
-  final layer without adding a separate head.
-
-Usage examples:
-  # fine-tune entire backbone
-  python sequential_finetune_no_head_lwf.py --finetune --epochs_per_task 5
-
-  # freeze everything except final classifier and train only that
-  python sequential_finetune_no_head_lwf.py --train_fc --epochs_per_task 5
-
-  # enable LwF when training sequentially over tasks
-  python sequential_finetune_no_head_lwf.py --use_lwf --lwf_alpha 0.5 --lwf_temp 2.0
 """
 
 import os
@@ -26,7 +9,7 @@ import time
 import argparse
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import copy
 import random
@@ -42,7 +25,6 @@ from tqdm import tqdm
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import (get_device)
 
 from typing import Sequence, Optional, List
 from torch.utils.data import Sampler
@@ -52,8 +34,12 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
-# -------------------------- BalancedBatchSampler (unchanged) --------------------------
-class BalancedBatchSampler(Sampler[List[int]]):
+# -------------------------- BalancedBatchSampler (fixed) --------------------------
+class BalancedBatchSampler(Sampler):
+    """
+    Yields full-batches (lists of indices) and therefore is intended to be
+    passed to DataLoader as `batch_sampler=BalancedBatchSampler(...)`.
+    """
     def __init__(self,
                  labels: Sequence[int] | torch.Tensor,
                  batch_size: int,
@@ -63,11 +49,13 @@ class BalancedBatchSampler(Sampler[List[int]]):
                  seed: Optional[int] = None,
                  drop_last: bool = True,
                  verbose: bool = False):
+        # unify labels to numpy array of ints
         if isinstance(labels, torch.Tensor):
-            self.labels = labels.cpu().long().numpy()
+            labels = labels.cpu().long().numpy()
         else:
-            self.labels = np.asarray(labels, dtype=np.int64)
+            labels = np.asarray(labels, dtype=np.int64)
 
+        self.labels = labels
         self.batch_size = int(batch_size)
         self.shuffle = bool(shuffle)
         self.oversample = bool(oversample)
@@ -80,7 +68,7 @@ class BalancedBatchSampler(Sampler[List[int]]):
         if self.num_classes == 0:
             raise ValueError("No classes found in labels.")
         if self.batch_size % self.num_classes != 0:
-            raise ValueError("batch_size must be a multiple of number of classes")
+            raise ValueError("batch_size must be a multiple of number of classes (got batch_size=%d, num_classes=%d)" % (self.batch_size, self.num_classes))
 
         self.per_class = self.batch_size // self.num_classes
 
@@ -96,16 +84,26 @@ class BalancedBatchSampler(Sampler[List[int]]):
         self.min_class_len = min(lens)
         self.max_class_len = max(lens)
 
+        # compute number of batches (careful about zero)
         if self.oversample:
-            self.num_batches = self.max_class_len // self.per_class
+            # need enough batches to cover the largest class
+            self.num_batches = math.ceil(self.max_class_len / float(self.per_class))
         else:
+            # limited by smallest class
             self.num_batches = self.min_class_len // self.per_class
 
-        self.generator = torch.Generator()
-        if seed is not None:
-            self.generator.manual_seed(int(seed))
+        if self.num_batches <= 0:
+            raise ValueError("Computed zero batches for BalancedBatchSampler: reduce per_class or supply more data. (min_class_len=%d, per_class=%d)" % (self.min_class_len, self.per_class))
+
+        # RNGs: keep both numpy RNG and torch Generator for compatibility
+        self.seed = None if seed is None else int(seed)
+        self.torch_gen = torch.Generator()
+        if self.seed is not None:
+            self.torch_gen.manual_seed(self.seed)
+            self.np_rng = np.random.RandomState(self.seed)
+            random.seed(self.seed)
         else:
-            self.generator = torch.Generator()
+            self.np_rng = np.random.RandomState()
 
     def __len__(self) -> int:
         return int(self.num_batches)
@@ -120,15 +118,17 @@ class BalancedBatchSampler(Sampler[List[int]]):
 
             if self.oversample:
                 if self.replacement:
-                    choices = torch.randint(low=0, high=n, size=(per_class_block,), generator=self.generator).numpy()
+                    # use torch randint for speed/reproducibility
+                    choices = torch.randint(low=0, high=n, size=(per_class_block,), generator=self.torch_gen).numpy()
                     selected = idxs[choices]
                 else:
                     reps = math.ceil(per_class_block / n)
-                    permuted = np.concatenate([np.random.permutation(idxs) for _ in range(reps)])[:per_class_block]
+                    # use numpy RNG for permutation/tiling
+                    permuted = np.concatenate([self.np_rng.permutation(idxs) for _ in range(reps)])[:per_class_block]
                     selected = permuted
             else:
                 if self.shuffle:
-                    perm = np.random.permutation(idxs)
+                    perm = self.np_rng.permutation(idxs)
                 else:
                     perm = idxs.copy()
                 if perm.shape[0] < per_class_block:
@@ -143,12 +143,13 @@ class BalancedBatchSampler(Sampler[List[int]]):
             parts = [class_rows[int(cls)][batch_idx] for cls in self.classes]
             batch = np.concatenate(parts, axis=0).tolist()
             if self.shuffle:
-                np.random.shuffle(batch)
+                # shuffle batch indices in-place with np RNG
+                self.np_rng.shuffle(batch)
             yield batch
 
         if self.verbose:
             used_counts = {int(cls): int(min(self.num_batches * self.per_class, len(self.class_to_indices[int(cls)]))) for cls in self.classes}
-            logger.info(f"[BalancedBatchSampler] num_batches={self.num_batches}, per_class={self.per_class}, samples_used_per_class(approx)={used_counts}")
+            logger.info(f"[BalancedBatchSampler] num_batches={self.num_batches}, per_class={self.per_class}, samples_used_per_class={used_counts}")
 
 
 # -------------------------- utilities --------------------------
@@ -159,23 +160,89 @@ def set_global_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
 
 def _get_classifier_param_list(module: nn.Module):
     """Try to find the final classifier params (common cases like resnet.fc)."""
-    # common wrapper style: backbone.resnet.fc
     if hasattr(module, "resnet") and hasattr(module.resnet, "fc"):
         return list(module.resnet.fc.parameters())
-    # direct fc attr
     if hasattr(module, "fc") and isinstance(module.fc, nn.Module):
         return list(module.fc.parameters())
-    # fallback: find last nn.Linear
     linear_modules = [m for m in module.modules() if isinstance(m, nn.Linear)]
     if len(linear_modules) > 0:
         return list(linear_modules[-1].parameters())
     return []
+
+
+def _extract_labels_from_dataset(dataset):
+    """
+    Robustly extract labels from a dataset.
+    Tries fast paths: dataset.targets / dataset.labels / Subset.dataset.targets,
+    otherwise falls back to indexing every sample (slower but reliable).
+    """
+    from torch.utils.data import Subset
+
+    # Helper to check if obj is sequence-like (not counting strings)
+    def is_sequence_like(x):
+        if x is None:
+            return False
+        if isinstance(x, (str, bytes)):
+            return False
+        try:
+            len(x)
+            return True
+        except Exception:
+            return False
+
+    # If it's a Subset, consider the underlying dataset first
+    if isinstance(dataset, Subset):
+        base = dataset.dataset
+        idxs = np.asarray(dataset.indices)
+        for attr in ("targets", "labels"):
+            if hasattr(base, attr):
+                attr_val = getattr(base, attr)
+                # If attr_val is a torch.Tensor, convert to numpy
+                if isinstance(attr_val, torch.Tensor):
+                    labels_arr = attr_val.cpu().numpy()
+                else:
+                    labels_arr = np.asarray(attr_val)
+                # If the attribute is sequence-like and 1-D, apply subset indices
+                if is_sequence_like(labels_arr) and getattr(labels_arr, "ndim", 1) >= 1:
+                    try:
+                        return labels_arr[idxs].tolist()
+                    except Exception:
+                        # fallback to slow path
+                        break
+                else:
+                    # attribute exists but isn't a per-sample sequence -> fall back
+                    break
+        # fall through to slow path below for Subset
+
+    else:
+        # Non-subset: try common attributes directly
+        for attr in ("targets", "labels"):
+            if hasattr(dataset, attr):
+                attr_val = getattr(dataset, attr)
+                if isinstance(attr_val, torch.Tensor):
+                    labels_arr = attr_val.cpu().numpy()
+                else:
+                    labels_arr = np.asarray(attr_val)
+                if is_sequence_like(labels_arr) and getattr(labels_arr, "ndim", 1) >= 1:
+                    return labels_arr.tolist()
+                # if attr exists but not sequence-like, break and fall back to indexing
+
+    # Last resort: index every item (slow but safe)
+    labels = []
+    for i in range(len(dataset)):
+        item = dataset[i]
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            lab = item[1]
+            if isinstance(lab, torch.Tensor):
+                lab = int(lab.item())
+            labels.append(int(lab))
+        else:
+            raise RuntimeError("Unable to extract label from dataset item; dataset must return (x, y).")
+    return labels
 
 
 # -------------------------- evaluation --------------------------
@@ -208,13 +275,14 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
             batch_size = labels_cpu.shape[0]
             num_probs = probs_cpu.shape[1] if probs_cpu.ndim == 2 else 0
             for i in range(batch_size):
-                rows.append({
+                row = {
                     "idx": sample_idx,
                     "label": int(labels_cpu[i]),
-                    "pred": int(preds_cpu[i]),
-                    "prob_real": float(probs_cpu[i, 0]) if num_probs >= 1 else 0.0,
-                    "prob_fake": float(probs_cpu[i, 1]) if num_probs >= 2 else 0.0
-                })
+                    "pred": int(preds_cpu[i])
+                }
+                for k in range(num_probs):
+                    row[f"prob_class_{k}"] = float(probs_cpu[i, k])
+                rows.append(row)
                 sample_idx += 1
 
     avg_loss = float(np.mean(losses)) if len(losses) > 0 else float('nan')
@@ -223,7 +291,15 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
     accuracy = float((preds_all == labels_all).sum() / labels_all.shape[0]) if labels_all.size > 0 else float('nan')
 
     csv_out = os.path.join(save_dir, f"{test_name}_predictions.csv")
-    df_preds = pd.DataFrame(rows, columns=["idx", "label", "pred", "prob_real", "prob_fake"]) if len(rows) > 0 else pd.DataFrame(columns=["idx", "label", "pred", "prob_real", "prob_fake"])
+    if len(rows) > 0:
+        df_preds = pd.DataFrame(rows)
+        cols = [c for c in ["idx", "label", "pred"] if c in df_preds.columns]
+        prob_cols = sorted([c for c in df_preds.columns if c.startswith("prob_class_")])
+        cols.extend(prob_cols)
+        df_preds = df_preds[cols]
+    else:
+        df_preds = pd.DataFrame(columns=["idx", "label", "pred"])
+
     df_preds.to_csv(csv_out, index=False)
 
     summary_out = os.path.join(save_dir, f"{test_name}_summary.txt")
@@ -233,7 +309,7 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
         f.write(f"avg_loss: {avg_loss:.6f}\n")
         f.write(f"accuracy: {accuracy:.6f}\n")
 
-    print(f"[evaluate] Saved predictions CSV to {csv_out} and summary to {summary_out}")
+    logger.info(f"[evaluate] Saved predictions CSV to {csv_out} and summary to {summary_out}")
     return avg_loss, accuracy
 
 
@@ -241,8 +317,17 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
 
 def train_and_eval(args):
     set_global_seed(args.seed)
-    device = get_device(args.device)
-    print(f"Using device: {device}")
+
+    # configure deterministic / benchmark according to flag
+    if args.deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    else:
+        torch.backends.cudnn.deterministic = False
+        torch.backends.cudnn.benchmark = True
+
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    logger.info(f"Using device: {device}")
 
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
     if len(tasks) == 0:
@@ -252,7 +337,7 @@ def train_and_eval(args):
     backbone = load_pretrained_model(PRETRAINED_MODELS[args.initial_backbone])
     backbone.to(device)
 
-    checkpoint_dir = "./checkpoint_finetune"
+    checkpoint_dir = "./checkpoint_lwf"
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs("./logs_lwf", exist_ok=True)
 
@@ -269,61 +354,84 @@ def train_and_eval(args):
     prev_ckpt = None
 
     for step, task in enumerate(tasks, start=1):
-        print('\n' + '='*60)
-        print(f"Task {step}/{len(tasks)}: train on {task}")
+        logger.info("\n" + "="*60)
+        logger.info(f"Task {step}/{len(tasks)}: train on {task}")
 
         # prepare datasets/loaders
         train_dataset = RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR[task])
 
-        # try BalancedBatchSampler if desired (optional)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-        print(f"Using standard DataLoader for training with batch size {args.batch_size}")
+        # optionally limit number of training samples per task
+        if args.max_train_samples and args.max_train_samples > 0:
+            from torch.utils.data import Subset
+            n_total = len(train_dataset)
+            k = min(int(args.max_train_samples), n_total)
+            rng = np.random.RandomState(int(args.seed))
+            indices = rng.choice(n_total, size=k, replace=False)
+            train_dataset = Subset(train_dataset, indices.tolist())
+            logger.info(f"Using subset of training data: {k}/{n_total} samples (seed={args.seed})")
 
-        # train_fc: freeze all except final classifier
-        if args.train_fc:
-            print("--train_fc set: freezing backbone parameters except final classifier")
-            for p in backbone.parameters():
-                p.requires_grad = False
-            classifier_params = _get_classifier_param_list(backbone)
-            if len(classifier_params) == 0:
-                print("[warning] Could not identify final classifier params; enabling all params for training instead")
-                for p in backbone.parameters():
-                    p.requires_grad = True
-            else:
-                for p in classifier_params:
-                    p.requires_grad = True
+        # ---------- prepare train loader ----------
+        if args.use_balanced_sampler:
+            # Try to extract labels efficiently from dataset
+            labels = _extract_labels_from_dataset(train_dataset)
+            sampler = BalancedBatchSampler(labels=labels,
+                                           batch_size=args.batch_size,
+                                           oversample=args.sampler_oversample,
+                                           shuffle=True,
+                                           replacement=args.sampler_replacement,
+                                           seed=args.seed,
+                                           drop_last=True,
+                                           verbose=False)
+            # IMPORTANT: BalancedBatchSampler yields full batches -> pass as batch_sampler
+            train_loader = DataLoader(train_dataset, batch_sampler=sampler, num_workers=args.num_workers)
+            logger.info("Using BalancedBatchSampler (as batch_sampler) for training loader")
         else:
-            print("Fine-tuning entire backbone")
-            for p in backbone.parameters():
-                p.requires_grad = True
+            train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
+            logger.info(f"Using standard DataLoader for training with batch size {args.batch_size}")
+
+        logger.info("Training the entire backbone")
+        for p in backbone.parameters():
+            p.requires_grad = True
 
         # optimizer: choose params that require grad
         trainable = [p for p in backbone.parameters() if p.requires_grad]
         if len(trainable) == 0:
             raise RuntimeError("No trainable parameters found. Check --train_fc or model structure.")
 
-        # if we only train classifier and classifier_lr provided, use it
+        # handle classifier param group if desired
         classifier_params = _get_classifier_param_list(backbone)
         param_groups = []
-        if args.train_fc and len(classifier_params) > 0:
-            param_groups.append({'params': classifier_params, 'lr': args.classifier_lr})
+
+        if len(classifier_params) > 0:
+            # identify classifier params that are trainable and others
+            cls_param_ids = {id(p) for p in classifier_params}
+            cls_params = [p for p in trainable if id(p) in cls_param_ids]
+            other_params = [p for p in trainable if id(p) not in cls_param_ids]
+            if len(cls_params) > 0:
+                param_groups.append({'params': other_params, 'lr': args.backbone_lr})
+                param_groups.append({'params': cls_params, 'lr': args.classifier_lr})
+            else:
+                param_groups.append({'params': trainable, 'lr': args.backbone_lr})
         else:
             param_groups.append({'params': trainable, 'lr': args.backbone_lr})
 
         optimizer = torch.optim.Adam(param_groups, weight_decay=args.weight_decay)
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step, gamma=args.scheduler_gamma) if args.use_scheduler else None
         criterion = nn.CrossEntropyLoss().to(device)
-        scaler = torch.cuda.amp.GradScaler() if (args.use_amp and torch.cuda.is_available()) else None
 
-        # If LwF is enabled and we have a previous model, prepare teacher
+        # create AMP scaler only if using CUDA and user enabled AMP
+        use_cuda = ('cuda' in str(device).lower()) and torch.cuda.is_available()
+        scaler = torch.cuda.amp.GradScaler() if (args.use_amp and use_cuda) else None
+
+        # If LwF is enabled and we have a previous model, prepare teacher (move to device only while used)
         teacher = None
-        if args.use_lwf and prev_model is not None:
-            teacher = prev_model
-            teacher.to(device)
+        if prev_model is not None:
+            # prev_model is stored on CPU if --teacher_on_cpu is set
+            teacher = prev_model.to(device)
             teacher.eval()
             for p in teacher.parameters():
                 p.requires_grad = False
-            print("LwF: using previous task model as teacher for distillation")
+            logger.info("LwF: using previous task model as teacher for distillation")
 
         # optionally resume from prev_ckpt (if provided)
         if prev_ckpt is not None and os.path.exists(prev_ckpt):
@@ -331,12 +439,12 @@ def train_and_eval(args):
                 ck = torch.load(prev_ckpt, map_location='cpu')
                 if 'backbone_state' in ck:
                     backbone.load_state_dict(ck['backbone_state'], strict=False)
-                print(f"Loaded previous checkpoint {prev_ckpt}")
+                logger.info(f"Loaded previous checkpoint {prev_ckpt}")
             except Exception as e:
-                print(f"[warning] couldn't load prev ckpt: {e}")
+                logger.warning(f"[warning] couldn't load prev ckpt: {e}")
 
         # training loop
-        print(f"Starting training for {args.epochs_per_task} epochs on {len(train_dataset)} samples")
+        logger.info(f"Starting training for {args.epochs_per_task} epochs on {len(train_dataset)} samples")
         start_time = time.time()
 
         T = float(args.lwf_temp)
@@ -349,7 +457,13 @@ def train_and_eval(args):
             correct = 0
             total = 0
 
-            for imgs, labels in tqdm(train_loader, desc=f"Train {task} (ep {epoch+1})", leave=False):
+            for batch in tqdm(train_loader, desc=f"Train {task} (ep {epoch+1})", leave=False):
+                # when using batch_sampler, DataLoader yields (batch_x, batch_y)
+                if args.use_balanced_sampler:
+                    imgs, labels = batch
+                else:
+                    imgs, labels = batch
+
                 imgs = imgs.to(device)
                 labels = labels.to(device).long()
 
@@ -357,13 +471,12 @@ def train_and_eval(args):
 
                 if scaler is not None:
                     with torch.cuda.amp.autocast():
-                        outputs = backbone(imgs)  # logits from backbone
+                        outputs = backbone(imgs)
                         loss_ce = criterion(outputs, labels)
 
                         if teacher is not None:
                             with torch.no_grad():
                                 teacher_logits = teacher(imgs)
-                            # distillation: KL between student's softmax and teacher's soft targets
                             log_p = F.log_softmax(outputs / T, dim=1)
                             q = F.softmax(teacher_logits / T, dim=1)
                             loss_kd = kd_loss_fn(log_p, q) * (T * T)
@@ -401,15 +514,15 @@ def train_and_eval(args):
             train_loss = float(np.mean(losses)) if len(losses) > 0 else 0.0
             train_acc = float(correct / total) if total > 0 else 0.0
             if (epoch+1) % max(1, args.log_every) == 0:
-                print(f"Epoch [{epoch+1}/{args.epochs_per_task}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
+                logger.info(f"Epoch [{epoch+1}/{args.epochs_per_task}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
 
         elapsed = time.time() - start_time
-        print(f"Finished task {task} training in {elapsed/60:.2f} minutes")
+        logger.info(f"Finished task {task} training in {elapsed/60:.2f} minutes")
 
-        # save last checkpoint (backbone state)
+        # save last checkpoint (backbone state + optimizer)
         last_ckpt = os.path.join(checkpoint_dir, f'ft_step{step}_{task}_last.pth')
-        torch.save({'backbone_state': backbone.state_dict(), 'optimizer_state': optimizer.state_dict()}, last_ckpt)
-        print(f"Saved last checkpoint: {last_ckpt}")
+        torch.save({'backbone_state': backbone.state_dict(), 'optimizer_state': optimizer.state_dict(), 'args': vars(args), 'task': task}, last_ckpt)
+        logger.info(f"Saved last checkpoint: {last_ckpt}")
 
         # evaluation on test sets (images -> backbone (logits))
         row = {"task": task}
@@ -422,22 +535,22 @@ def train_and_eval(args):
 
         mean_acc = float(np.mean(test_accs)) if len(test_accs) > 0 else 0.0
         best_ckpt = os.path.join(checkpoint_dir, f'ft_step{step}_{task}_best.pth')
-        torch.save({'backbone_state': backbone.state_dict()}, best_ckpt)
+        torch.save({'backbone_state': backbone.state_dict(), 'args': vars(args), 'task': task}, best_ckpt)
         prev_ckpt = best_ckpt
-        print(f"Saved best checkpoint for task {task}: {best_ckpt} (mean_test_acc={mean_acc:.4f})")
+        logger.info(f"Saved best checkpoint for task {task}: {best_ckpt} (mean_test_acc={mean_acc:.4f})")
 
         # If using LwF, create a frozen copy of current model to use as teacher for next task
-        if args.use_lwf:
-            prev_model = copy.deepcopy(backbone).eval()
-            # Ensure teacher on CPU for safe storage, move to device when used
-            for p in prev_model.parameters():
-                p.requires_grad = False
+        prev_model = copy.deepcopy(backbone).eval()
+        if args.teacher_on_cpu:
+            prev_model.to('cpu')
+        for p in prev_model.parameters():
+            p.requires_grad = False
 
         results.append(row)
         df = pd.DataFrame(results)
         df.to_csv(os.path.join("./logs_lwf", "sequential_lwf_results.csv"), index=False)
 
-    print("All tasks finished")
+    logger.info("All tasks finished")
     return pd.DataFrame(results)
 
 
@@ -446,24 +559,30 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--initial_backbone', type=str, default='stylegan1', choices=list(PRETRAINED_MODELS.keys()))
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl')
-    parser.add_argument('--train_fc', action='store_true', help='If set, freeze backbone and train only final classifier layer')
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--epochs_per_task', type=int, default=1)
+    parser.add_argument('--epochs_per_task', type=int, default=10)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
     parser.add_argument('--classifier_lr', type=float, default=1e-3)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--log_every', type=int, default=1)
+    parser.add_argument('--log_every', type=int, default=10)
     parser.add_argument('--use_scheduler', action='store_true')
     parser.add_argument('--scheduler_step', type=int, default=5)
     parser.add_argument('--scheduler_gamma', type=float, default=0.5)
     parser.add_argument('--use_amp', action='store_true')
 
     # LwF args
-    parser.add_argument('--use_lwf', action='store_true', help='Enable Learning without Forgetting (distillation from previous model)')
     parser.add_argument('--lwf_alpha', type=float, default=0.5, help='Weight for distillation loss (0..1)')
     parser.add_argument('--lwf_temp', type=float, default=2.0, help='Temperature for distillation')
+
+    # New flags from patch
+    parser.add_argument('--use_balanced_sampler', action='store_true', default=False, help='Use BalancedBatchSampler for training loader')
+    parser.add_argument('--sampler_oversample', action='store_true', help='BalancedBatchSampler oversample smaller classes')
+    parser.add_argument('--sampler_replacement', action='store_true', help='BalancedBatchSampler sampling with replacement when oversampling')
+    parser.add_argument('--teacher_on_cpu', action='store_true', default=True, help='Keep previous-task teacher on CPU to save GPU memory')
+    parser.add_argument('--max_train_samples', type=int, default=0, help='If >0, use at most this many training samples per task (random subset)')
+    parser.add_argument('--deterministic', action='store_true', default=False, help='Set cudnn.deterministic True (slow) for reproducibility')
 
     args = parser.parse_args()
 

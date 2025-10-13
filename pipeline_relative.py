@@ -15,7 +15,8 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import pandas as pd
-
+import csv
+import json
 # === Project imports - adjust these to your repo layout ===
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
@@ -24,35 +25,135 @@ from src.utils import get_device, BalancedBatchSampler, RelativeRepresentation, 
 from g_rel import fine_tune
 # -----------------------
 
+
 def run_sequential_finetunes(
     order=None,
     checkpoint_file: str = "checkpoint/checkpoint_HELLO.pth",
     verbose: bool = True,
+    sample_show: int = 50,            # how many raw diffs to show in the "sample" CSV
+    topk_show: int = 50,             # how many largest diffs to list in the top-k CSV
+    dump_full_threshold: int = 100000, # above this number of elements we don't dump full diffs
+    float_fmt: str = "{:.6g}",      # formatting for sample outputs (human-readable)
     **fine_tune_kwargs
 ):
     """
     Run fine_tune sequentially over a list of datasets, loading the checkpoint
     produced by the previous step for every run after the first.
 
-    Args:
-        order (list or None): list of dataset keys to fine-tune on, in order.
-                              Defaults to ['stylegan1','stylegan2','sdv1_4','stylegan3','stylegan_xl'].
-        checkpoint_file (str): path used by fine_tune to save/load weights.
-        verbose (bool): print progress messages.
-        **fine_tune_kwargs: forwarded to fine_tune (e.g., epochs=, batch_size=, backbone=, etc.)
-
-    Returns:
-        dict: mapping fine_tuning_on -> fine_tune returned test_results
+    This version saves **human-friendly** summaries of anchor differences for
+    easier inspection. For each domain you'll get a compact `summary_<domain>.csv`
+    plus a small `sample` file and a `topk` file listing the largest absolute
+    differences. When anchors are dicts, the same per-key summaries are saved
+    under `anchros/<domain>/`.
     """
     if order is None:
         order = ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl']
 
     results_all = {}
     load_checkpoint = False  # first step must load nothing
+    anchros = None
+
+    # helper: convert many possible tensor/array types to numpy
+    def to_numpy(x):
+        if isinstance(x, np.ndarray):
+            return x
+        if isinstance(x, torch.Tensor):
+            return x.detach().cpu().numpy()
+        try:
+            return np.asarray(x)
+        except Exception:
+            return None
+
+    # helper: create a human-friendly summary for a 1D numpy array 'diff'
+    def summarize_and_dump(diff, out_dir, name_prefix):
+        """Writes summary_<name_prefix>.csv, sample_<name_prefix>.csv, topk_<name_prefix>.csv
+        and optionally the full results_<name_prefix>.csv if array is small enough.
+        Returns the summary dict."""
+        os.makedirs(out_dir, exist_ok=True)
+        diff = np.asarray(diff).flatten()
+        n = diff.size
+        if n == 0:
+            summary = {"num_elements": 0}
+            with open(os.path.join(out_dir, f"summary_{name_prefix}.csv"), 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["metric", "value"])
+                writer.writerow(["num_elements", 0])
+            return summary
+
+        mean = float(np.mean(diff))
+        std = float(np.std(diff))
+        median = float(np.median(diff))
+        q25 = float(np.percentile(diff, 25))
+        q75 = float(np.percentile(diff, 75))
+        minv = float(np.min(diff))
+        maxv = float(np.max(diff))
+        mad = float(np.mean(np.abs(diff - mean)))
+        num_pos = int(np.sum(diff > 0))
+        num_neg = int(np.sum(diff < 0))
+        num_zero = int(np.sum(diff == 0))
+
+        summary = {
+            "num_elements": int(n),
+            "mean": mean,
+            "std": std,
+            "median": median,
+            "25%": q25,
+            "75%": q75,
+            "min": minv,
+            "max": maxv,
+            "mad": mad,
+            "num_positive": num_pos,
+            "num_negative": num_neg,
+            "num_zero": num_zero,
+        }
+
+        # Save a compact machine-friendly CSV summary
+        summary_path = os.path.join(out_dir, f"summary_{name_prefix}.csv")
+        with open(summary_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["metric", "value"])
+            for k, v in summary.items():
+                writer.writerow([k, v])
+
+        # Save a JSON summary too (handy for programmatic loading)
+        with open(os.path.join(out_dir, f"summary_{name_prefix}.json"), 'w') as jf:
+            json.dump(summary, jf, indent=2)
+
+        # Save a human-readable SAMPLE of the first sample_show values (formatted)
+        sample_n = min(sample_show, n)
+        sample_path = os.path.join(out_dir, f"sample_{name_prefix}.csv")
+        with open(sample_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["index", "difference", "abs_difference"])
+            for i in range(sample_n):
+                d = diff[i]
+                writer.writerow([i, float_fmt.format(d), float_fmt.format(abs(d))])
+
+        # Save top-k largest absolute differences for quick inspection
+        topk = min(topk_show, n)
+        abs_idx = np.argsort(np.abs(diff))[::-1][:topk]
+        topk_path = os.path.join(out_dir, f"topk_{name_prefix}.csv")
+        with open(topk_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["rank", "index", "difference", "abs_difference"]) 
+            for rank, idx in enumerate(abs_idx, start=1):
+                d = float(diff[idx])
+                writer.writerow([rank, int(idx), float_fmt.format(d), float_fmt.format(abs(d))])
+
+        # Optionally dump full differences if array is small
+        if n <= dump_full_threshold:
+            full_path = os.path.join(out_dir, f"results_{name_prefix}.csv")
+            with open(full_path, 'w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["index", "difference", "abs_difference"]) 
+                for i, d in enumerate(diff):
+                    writer.writerow([i, float(d), float(abs(d))])
+
+        return summary
 
     for domain in order:
         if verbose:
-            print(f"\n>>> Starting fine-tune on '{domain}' (load_checkpoint={load_checkpoint})")
+            print(f">>> Starting fine-tune on '{domain}' (load_checkpoint={load_checkpoint})")
 
         # Ensure the fine_tune call uses the intended checkpoint_file and load flag
         kwargs = dict(fine_tune_kwargs)  # shallow copy
@@ -61,10 +162,102 @@ def run_sequential_finetunes(
             'load_checkpoint': load_checkpoint,
             'checkpoint_file': checkpoint_file,
         })
+        os.makedirs("anchros", exist_ok=True)
 
         try:
-            test_results = fine_tune(**kwargs)
+            test_results, new_anchros = fine_tune(**kwargs)
             results_all[domain] = test_results
+
+            # --- Compare old anchors and new anchors and save differences + human summaries ---
+            if anchros is not None:
+                # If anchors are dictionaries (per-anchor-key), handle per-key
+                if isinstance(new_anchros, dict) and isinstance(anchros, dict):
+                    domain_dir = os.path.join("anchros", domain)
+                    os.makedirs(domain_dir, exist_ok=True)
+
+                    # iterate keys present in both
+                    all_keys = sorted(set(list(new_anchros.keys()) + list(anchros.keys())))
+                    per_key_summary = {}
+                    for key in all_keys:
+                        if key not in anchros or key not in new_anchros:
+                            if verbose:
+                                print(f"Warning: key '{key}' only present in one side. Skipping.")
+                            continue
+
+                        old_arr = to_numpy(anchros[key])
+                        new_arr = to_numpy(new_anchros[key])
+                        if old_arr is None or new_arr is None:
+                            if verbose:
+                                print(f"Skipping key {key} because conversion to numpy failed")
+                            continue
+
+                        # Align shapes: if different, flatten and align to min length
+                        if old_arr.shape != new_arr.shape:
+                            if verbose:
+                                print(f"Warning: shape mismatch for key {key}: old={old_arr.shape}, new={new_arr.shape}. Flattening and aligning to min length.")
+                            old_flat = old_arr.flatten()
+                            new_flat = new_arr.flatten()
+                            min_len = min(old_flat.size, new_flat.size)
+                            diff = new_flat[:min_len] - old_flat[:min_len]
+                        else:
+                            diff = new_arr - old_arr
+
+                        key_dir = os.path.join(domain_dir, str(key))
+                        summary = summarize_and_dump(diff, key_dir, f"{key}")
+                        per_key_summary[key] = summary
+
+                    # Write a combined CSV listing keys and the most important stats
+                    combined_path = os.path.join(domain_dir, "combined_key_summary.csv")
+                    with open(combined_path, 'w', newline='') as cf:
+                        writer = csv.writer(cf)
+                        writer.writerow(["key", "num_elements", "mean", "std", "median", "min", "max", "num_pos", "num_neg", "num_zero"])
+                        for key, s in per_key_summary.items():
+                            writer.writerow([
+                                key,
+                                s.get('num_elements',''),
+                                s.get('mean',''),
+                                s.get('std',''),
+                                s.get('median',''),
+                                s.get('min',''),
+                                s.get('max',''),
+                                s.get('num_positive',''),
+                                s.get('num_negative',''),
+                                s.get('num_zero',''),
+                            ])
+
+                    if verbose:
+                        print(f"Saved per-key human-friendly summaries to {domain_dir}")
+
+                else:
+                    # Treat anchors as single arrays / tensors
+                    old_arr = to_numpy(anchros)
+                    new_arr = to_numpy(new_anchros)
+                    if old_arr is None or new_arr is None:
+                        if verbose:
+                            print("Could not convert anchros to numpy arrays for diffing. Skipping.")
+                    else:
+                        # attempt to align shapes
+                        if old_arr.shape != new_arr.shape:
+                            if verbose:
+                                print(f"Warning: shape mismatch for anchros: old={old_arr.shape}, new={new_arr.shape}. Flattening and aligning to min length.")
+                            old_flat = old_arr.flatten()
+                            new_flat = new_arr.flatten()
+                            min_len = min(old_flat.size, new_flat.size)
+                            diff = new_flat[:min_len] - old_flat[:min_len]
+                        else:
+                            diff = new_arr - old_arr
+
+                        # Write nice human-friendly summaries into anchros/<domain>/
+                        outdir = os.path.join("anchros", domain)
+                        os.makedirs(outdir, exist_ok=True)
+                        summary = summarize_and_dump(diff, outdir, domain)
+
+                        if verbose:
+                            print(f"Saved human-friendly anchor summaries to {outdir}")
+                            print(f"Mean diff: {summary.get('mean'):.6g}, Std diff: {summary.get('std'):.6g}")
+
+            # --- Update anchors for next step ---
+            anchros = new_anchros
             if verbose:
                 print(f">>> Finished '{domain}' — results keys: {list(test_results.keys())}")
         except Exception as e:
@@ -76,7 +269,7 @@ def run_sequential_finetunes(
         load_checkpoint = True
 
     if verbose:
-        print("\nAll sequential fine-tunes completed.")
+        print("All sequential fine-tunes completed.")
     return results_all
 
 
@@ -99,6 +292,6 @@ if __name__ == "__main__":
 
     # print a compact summary
     for domain, res in all_results.items():
-        print(f"\n=== Summary for {domain} ===")
+        print(f"=== Summary for {domain} ===")
         for test_name, metrics in res.items():
             print(f"  {test_name}: acc={metrics['acc']:.4f}, loss={metrics['loss']:.4f}")
