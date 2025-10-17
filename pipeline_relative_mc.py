@@ -21,8 +21,7 @@ import json
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
-from g_rel import fine_tune
+from g_rel_mc import fine_tune
 # -----------------------
 
 
@@ -277,7 +276,7 @@ if __name__ == "__main__":
     # quick example: run short experiments for debugging
     all_results = run_sequential_finetunes(
         order=['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
-        checkpoint_file="checkpoint/checkpoint_HELLO.pth",
+        checkpoint_file="checkpoint/checkpoint_HELLO_mc.pth",
         # any args forwarded to fine_tune:
         epochs=5,
         batch_size=512,
@@ -287,10 +286,11 @@ if __name__ == "__main__":
         backbone='stylegan1',     # or whichever backbone you want
         plot_method='pca',
         force_recompute_features=False,
+        n_classes=7
     )
 
     # print a compact summary
-    for domain, res in all_results.items():
+    for domain, res in all_results[0].items():
         print(f"=== Summary for {domain} ===")
         for test_name, metrics in res.items():
             print(f"  {test_name}: acc={metrics['acc']:.4f}, loss={metrics['loss']:.4f}")

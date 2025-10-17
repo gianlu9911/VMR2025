@@ -20,7 +20,7 @@ import pandas as pd
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import get_device, BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
+from src.utils import BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
 from g_rel import fine_tune
 from pipeline_relative import run_sequential_finetunes
 # -----------------------
@@ -63,7 +63,7 @@ def run_param_sweep(
         dict: mapping (backbone, ntrain_repr, nanchors_repr) -> results_from_run_sequential_finetunes
     """
     if order is None:
-        order = ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl']
+        order = ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1']
 
     results = {}
 
@@ -127,10 +127,10 @@ if __name__ == "__main__":
     # sweep di esempio: prova 3 valori di num_train_samples e 2 di num_anchors su un solo backbone
     sweep_results = run_param_sweep(
         backbones=['stylegan1'],  # o passa più backbone
-        num_train_samples_list=[50, 100, None],   # None == use all samples
-        num_anchors_list=[100, 5000],
-        epochs=300,                # per test veloce; metti quello che ti serve
-        batch_size=16,
+        num_train_samples_list=[None],   # None == use all samples
+        num_anchors_list=[100, 500, 1000, 5000, 10000, 20000, None], 
+        epochs=50,                # per test veloce; metti quello che ti serve
+        batch_size=256,
         num_workers=8,
         seed=42,
         force_recompute_features_first_run=False,

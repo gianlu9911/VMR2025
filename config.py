@@ -18,4 +18,5 @@ IMAGE_DIR = {
     'sdv1_4'    : os.path.join(DATASET_DIR, 'generated', 'sdv1_4', 'images1024x1024'),
     'stylegan3' : os.path.join(DATASET_DIR, 'generated', 'stylegan3-psi-0.5', 'images1024x1024'),
     'stylegan_xl' : os.path.join(DATASET_DIR, 'generated', 'styleganxl-psi-0.5', 'images1024x1024'),
+    'sdv2_1'    : os.path.join(DATASET_DIR, 'generated', 'sdv2_1', 'images1024x1024'),  # Add path for sdv2_1
 }

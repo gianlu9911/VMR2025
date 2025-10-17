@@ -17,10 +17,11 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # === Project imports - adjust these to your repo layout ===
-from config import PRETRAINED_MODELS, IMAGE_DIR
-from src.g_dataloader import RealSynthethicDataloader
+from config import PRETRAINED_MODELS
+from src.g_dataloader import RealSynthethicDataloader_mc as RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
+from src.utils import evaluate_mc as evaluate
+from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, train_one_epoch, plot_features_with_anchors
 
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
@@ -44,6 +45,7 @@ def fine_tune(
     # NEW: checkpoint handling
     load_checkpoint: bool = False,
     checkpoint_file: str = "checkpoint/checkpoint_HELLO.pth",
+    n_classes: int = 2,
 
 ):
     """Fine-tune relative-representation classifier.
@@ -57,8 +59,8 @@ def fine_tune(
     device = torch.device("cuda:"+device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    feature_dir = f"./feature_{backbone}"
-    checkpoint_dir = "./checkpoint"
+    feature_dir = f"./feature_mc_{backbone}"
+    checkpoint_dir = "./checkpoint_mc"
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
     # ensure directory for custom checkpoint_file exists
@@ -77,8 +79,8 @@ def fine_tune(
     backbone_net.eval()
 
     # Dataset directories
-    real_dir = IMAGE_DIR['real']
-    fake_dir = IMAGE_DIR[fine_tuning_on]
+    real_dir = 'real'
+    fake_dir = fine_tuning_on
 
     dataset = RealSynthethicDataloader(real_dir, fake_dir)
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
@@ -95,6 +97,7 @@ def fine_tune(
         feats_full, labels_full = data["features"], data["labels"]
         feat_time_full = 0.0
         print("Loaded cached full training features")
+    print(f"Labels in training set: {pd.Series(labels_full.numpy()).value_counts().to_dict()}")
 
     # Subsample training samples if requested
     if num_train_samples is None:
@@ -110,7 +113,7 @@ def fine_tune(
         feats = feats_full
         labels = labels_full
 
-    print(f"Using {len(feats)} training samples (real: {(labels==0).sum().item()}, fake: {(labels==1).sum().item()})")
+    print(f"Using {len(feats)} training samples (real: {(labels==0).sum().item()}, stylegan1: {(labels==1).sum().item()}, stylegan2: {(labels==2).sum().item()}, sdv1_4:{(labels==3).sum().item()},stylegan3: {(labels==4).sum().item()}, stylegan_xl: {(labels==5).sum().item()}, sdv2_1: {(labels==6).sum().item()}) for fine-tuning on {fine_tuning_on}")
 
     # Anchors (take from real training features only, allow sampling WITH replacement
     real_mask = labels == 0
@@ -146,7 +149,7 @@ def fine_tune(
     feat_loader = DataLoader(feat_dataset, batch_sampler=sampler)
 
     # Classifier
-    classifier = RelClassifier(rel_module, anchors.size(0), num_classes=2).to(device)
+    classifier = RelClassifier(rel_module, anchors.size(0), num_classes=n_classes).to(device)
 
     # NEW: load checkpoint into classifier if requested
     if load_checkpoint:
@@ -198,12 +201,12 @@ def fine_tune(
 
     # Prepare test datasets
     dataloaders_test = {
-        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
-        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-                "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set')
-,        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-        "real_vs_styleganxl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
+        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, 'stylegan1', split='test_set'),
+        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, 'stylegan2', split='test_set'),
+        "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, 'sdv1_4', split='test_set'),
+        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, 'stylegan3', split='test_set'),
+        "real_vs_styleganxl": RealSynthethicDataloader(real_dir, 'stylegan_xl', split='test_set'),
+        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, 'sdv2_1', split='test_set'), 
     }
 
     test_results = {}
@@ -216,19 +219,20 @@ def fine_tune(
                                 num_workers=num_workers)
             feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
                                                                           feat_file_test, device, split='test_set')
+            
         else:
             data = torch.load(feat_file_test)
             feats_test, labels_test = data["features"], data["labels"]
             feat_time = 0.0
             print("Loaded cached test features")
-
+        print(f"[DEBUG] Labels in {name} test set: {pd.Series(labels_test.numpy()).value_counts().to_dict()}")
         # Plot anchors + eval real + eval fake
         # anchors is available (torch tensor on device) -> move to cpu for plotting
         anchors_cpu = anchors.cpu()
-        real_mask_eval = (labels_test == 0)
-        fake_mask_eval = (labels_test == 1)
-        real_feats_eval = feats_test[real_mask_eval]
-        fake_feats_eval = feats_test[fake_mask_eval]
+        #real_mask_eval = (labels_test == 0)
+        #fake_mask_eval = (labels_test == 1)
+        #real_feats_eval = feats_test[real_mask_eval]
+        #fake_feats_eval = feats_test[fake_mask_eval]
 
         #plot_save_path = os.path.join("./logs", f"feature_plot_{name}_{plot_method}.png")
         #os.makedirs("./logs", exist_ok=True)
@@ -258,7 +262,7 @@ def fine_tune(
 
     # Default path if not provided
     if eval_csv_path is None:
-        eval_csv_path = os.path.join('logs', 'test_accuracies.csv')
+        eval_csv_path = os.path.join('logs_mc', 'test_accuracies.csv')
     os.makedirs(os.path.dirname(eval_csv_path), exist_ok=True)
 
     with open(eval_csv_path, 'a') as f:
@@ -282,10 +286,10 @@ def fine_tune(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_samples', type=int, default=None,
@@ -304,14 +308,16 @@ if __name__ == "__main__":
                         help="Max number of eval points (real+fake) to plot (anchors always included)")
     parser.add_argument('--force_recompute_features', action='store_true',
                         help="Force recomputation of saved features")
-    parser.add_argument('--eval_csv_path', type=str, default=None,
-                        help='Optional path to evaluation CSV (default: ./logs/eval_results.csv)')
+    parser.add_argument('--eval_csv_path', type=str, default='./logs_mc/eval_results_mc.csv',
+                        help='Optional path to evaluation CSV (default: ./logs/eval_results_mc.csv)')
 
     # NEW CLI args for checkpoint load/save
     parser.add_argument('--load_checkpoint', action='store_true',
                         help="If set, attempt to load weights from --checkpoint_file before training (default: False).")
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO.pth',
+    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO_mc.pth',
                         help="Path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)")
+    parser.add_argument('--n_classes', type=int, default=7,
+                        help="Number of classes for the classifier (default: 7)")
 
     
 
@@ -319,6 +325,9 @@ if __name__ == "__main__":
 
     # pass explicit keyword args to the function (no argparse.Namespace usage inside fine_tune)
     results = fine_tune(**vars(args))
+    test_results = results[0]   # first item
+    anchors = results[1]        # second item
+
     print("All test results:")
-    for k, v in results.items():
-        print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")
+    for k, v in test_results.items():
+        print(f"{k}: Loss {v['loss']:.4f}, Acc {v['acc']:.4f}, Feat_time {v['feat_time']:.2f}s")
