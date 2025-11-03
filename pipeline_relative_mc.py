@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import numpy as np
 import torch
@@ -19,7 +19,7 @@ import csv
 import json
 # === Project imports - adjust these to your repo layout ===
 from config import PRETRAINED_MODELS, IMAGE_DIR
-from src.g_dataloader import RealSynthethicDataloader
+from src.g_dataloader import RealSyntheticDataloaderMC as RealSynthethicDataloader
 from src.net import load_pretrained_model
 from g_rel_mc import fine_tune
 # -----------------------
@@ -27,7 +27,7 @@ from g_rel_mc import fine_tune
 
 def run_sequential_finetunes(
     order=None,
-    checkpoint_file: str = "checkpoint/checkpoint_HELLO.pth",
+    checkpoint_file: str = "checkpoint_mc/checkpoint_HELLO_mc.pth",
     verbose: bool = True,
     sample_show: int = 50,            # how many raw diffs to show in the "sample" CSV
     topk_show: int = 50,             # how many largest diffs to list in the top-k CSV
@@ -278,7 +278,7 @@ if __name__ == "__main__":
         order=['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
         checkpoint_file="checkpoint/checkpoint_HELLO_mc.pth",
         # any args forwarded to fine_tune:
-        epochs=5,
+        epochs=10,
         batch_size=512,
         num_workers=8,
         seed=42,

@@ -4,7 +4,82 @@ import random
 from glob import glob
 from PIL import Image
 from src.transform import data_transforms
+from config import IMAGE_DIR
 
+class RealSyntheticDataloaderMC(Dataset):
+    def __init__(self, real_dir=None, fake_1=None, 
+                 split='train_set', balance_fake_to_real=False, seed=42):
+        LABEL_MAP = {
+            'real': 0,
+            'stylegan1': 1,
+            'stylegan2': 2,
+            'sdv1_4': 3,
+            'stylegan3': 4,
+            'stylegan_xl': 5,
+            'sdv2_1': 6
+        }
+
+        random.seed(seed)
+        self.images = []
+        self.labels = {}
+        self.source_counts = {}
+
+        real_dir = IMAGE_DIR.get('real', None)
+        fake_dir1 = IMAGE_DIR.get(fake_1, None)
+
+        # --- REAL ---
+        rgb_real = []
+        if real_dir:
+            rgb_real += sorted(glob(os.path.join(real_dir, split, '*.png')))
+            rgb_real += sorted(glob(os.path.join(real_dir, split, '*.jpg')))
+            rgb_real = list(set(rgb_real))
+            self.source_counts['real'] = len(rgb_real)
+            self.images += rgb_real
+            self.labels.update({img: LABEL_MAP['real'] for img in rgb_real})
+        else:
+            self.source_counts['real'] = 0
+
+        # --- FAKE ---
+        rgb_fake = []
+        if fake_dir1:
+            rgb_fake += sorted(glob(os.path.join(fake_dir1, split, '*.png')))
+            rgb_fake += sorted(glob(os.path.join(fake_dir1, split, '*.jpg')))
+            rgb_fake = list(set(rgb_fake))
+            self.source_counts[fake_1] = len(rgb_fake)
+        else:
+            self.source_counts[fake_1] = 0
+
+        # --- BALANCING ---
+        if balance_fake_to_real and real_dir:
+            n_real = self.source_counts['real']
+            if len(rgb_fake) > 0:
+                rgb_fake = random.sample(rgb_fake, min(len(rgb_fake), n_real))
+
+        # --- LABEL FAKES ---
+        if fake_dir1:
+            label_fake = LABEL_MAP.get(fake_1, 1)
+            self.images += rgb_fake
+            self.labels.update({img: label_fake for img in rgb_fake})
+            print(f"[DEBUG] Assigned label {label_fake} to fake images from {fake_1}")
+
+        self.len = len(self.images)
+        self.preprocess_rgb = data_transforms['image']
+
+        print(f"\nLoaded dataset ({split}):")
+        for k, v in self.source_counts.items():
+            print(f"  {k}: {v}")
+        print(f"  total: {self.len}\n")
+
+    def __len__(self):
+        return self.len
+
+    def __getitem__(self, idx):
+        img_path = self.images[idx]
+        x = self.preprocess_rgb(Image.open(img_path).convert('RGB'))
+        y = self.labels[img_path]
+        return x, y
+
+    
 class RealSynthethicDataloader(Dataset):
     def __init__(self, real_dir=None, fake_dir1=None, fake_dir2=None, 
                  split='train_set', balance_fake_to_real=False, seed=42):

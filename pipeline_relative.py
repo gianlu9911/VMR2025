@@ -160,6 +160,8 @@ def run_sequential_finetunes(
             'fine_tuning_on': domain,
             'load_checkpoint': load_checkpoint,
             'checkpoint_file': checkpoint_file,
+            'save_feats_prefix': f'saved_numpy_features/step_{domain}',
+            'save_feats': True,
         })
         os.makedirs("anchros", exist_ok=True)
 

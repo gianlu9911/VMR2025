@@ -3,7 +3,8 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+from tqdm import tqdm
 
 import numpy as np
 import torch
@@ -18,14 +19,130 @@ import pandas as pd
 
 # === Project imports - adjust these to your repo layout ===
 from config import PRETRAINED_MODELS
-from src.g_dataloader import RealSynthethicDataloader_mc as RealSynthethicDataloader
+from src.g_dataloader import RealSyntheticDataloaderMC as RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import evaluate_mc as evaluate
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, train_one_epoch, plot_features_with_anchors
+from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier,  train_one_epoch, plot_features_with_anchors
 
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
 # ---------------------------------------------
+def extract_and_save_features(backbone, dataloader, feature_path, device, split='train_set'):
+    feats, labels = [], []
+    print(f"Saving features to {feature_path}...")
+
+    start_time = time.time()
+    backbone.eval()
+    with torch.no_grad():
+        for imgs, lbls in tqdm(dataloader, desc=f"Extracting {os.path.basename(feature_path)}"):
+            imgs = imgs.to(device)
+            out = backbone(imgs)  # assuming backbone returns feature vector
+            feats.append(out.cpu())
+            labels.append(lbls)
+
+    feats = torch.cat(feats, dim=0)
+    labels = torch.cat(labels, dim=0)
+    total_time = time.time() - start_time
+
+    torch.save({"features": feats, "labels": labels}, feature_path)
+    print(f"Features saved to {feature_path} (time: {total_time/60:.2f} min)")
+    return feats, labels, total_time
+def evaluate_mc(model, dataloader, criterion, device, rel_module=None, test_name="test_set", save_dir="./logs", n_classes=None):
+    model.eval()
+    val_loss, val_acc, num_samples = 0.0, 0.0, 0
+    all_preds, all_labels, all_feats = [], [], []
+
+    os.makedirs(save_dir, exist_ok=True)
+
+    # we'll try to infer num classes from model outputs if n_classes is not provided
+    inferred_n_classes_from_model = None
+
+    with torch.no_grad():
+        for features, labels in dataloader:
+            features, labels = features.to(device), labels.to(device)
+            outputs = model(features)
+            loss = criterion(outputs, labels)
+
+            # try to record model-output classes (if outputs are logits)
+            if n_classes is None and outputs.dim() == 2:
+                inferred_n_classes_from_model = outputs.size(1)
+
+            _, preds = torch.max(outputs, 1)
+            acc = (preds == labels).float().sum().item()  # total correct in batch
+            batch_size = labels.size(0)
+
+            val_loss += loss.item() * batch_size
+            val_acc += acc
+            num_samples += batch_size
+
+            all_preds.append(preds.cpu())
+            all_labels.append(labels.cpu())
+
+            if rel_module is not None:
+                rel_feat = rel_module(features).cpu()
+                all_feats.append(rel_feat)
+
+    if num_samples == 0:
+        raise RuntimeError("Empty dataloader passed to evaluate_mc (no samples).")
+
+    all_preds = torch.cat(all_preds).numpy()
+    all_labels = torch.cat(all_labels).numpy()
+    avg_loss = val_loss / num_samples
+    avg_acc = val_acc / num_samples
+
+    # relative stats
+    if rel_module is not None and len(all_feats) > 0:
+        all_feats = torch.cat(all_feats)
+        df_stats = pd.DataFrame({
+            "label": all_labels,
+            "pred": all_preds,
+            "mean_sim": all_feats.mean(dim=1).numpy(),
+            "std_sim": all_feats.std(dim=1).numpy(),
+            "max_sim": all_feats.max(dim=1)[0].numpy(),
+            "min_sim": all_feats.min(dim=1)[0].numpy()
+        })
+        df_stats.to_csv(os.path.join(save_dir, f"relative_stats_{test_name}.csv"), index=False)
+
+    # determine number of classes robustly
+    if n_classes is None:
+        if inferred_n_classes_from_model is not None:
+            n_classes = int(inferred_n_classes_from_model)
+        else:
+            # fallback: use max label/pred + 1
+            n_classes = int(max(all_labels.max(), all_preds.max()) + 1)
+
+    # ensure at least as many classes as unique labels/preds (prevent accidental truncation)
+    unique_count = len(np.unique(np.concatenate([all_labels, all_preds])))
+    if n_classes < unique_count:
+        n_classes = unique_count
+
+    # compute confusion matrix with explicit labels range
+    cm = confusion_matrix(all_labels, all_preds, labels=np.arange(n_classes))
+
+    plt.figure(figsize=(6,5))
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues, alpha=0.85)
+    plt.colorbar()
+    tick_labels = [f"Class {i}" for i in range(n_classes)]
+    plt.xticks(np.arange(n_classes), tick_labels, rotation=45)
+    plt.yticks(np.arange(n_classes), tick_labels)
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+    plt.title(f"Confusion Matrix - {test_name}")
+
+    thresh = cm.max() / 2.0 if cm.max() > 0 else 0.0
+    for i in range(n_classes):
+        for j in range(n_classes):
+            plt.text(j, i, str(cm[i, j]),
+                     ha="center", va="center",
+                     color="white" if cm[i, j] > thresh else "black",
+                     fontsize=9, fontweight="bold")
+    plt.tight_layout()
+    plt.savefig(os.path.join(save_dir, f"confusion_matrix_{test_name}.png"), dpi=200)
+    plt.close()
+
+    print(f"[{test_name}] - Loss: {avg_loss:.4f}, Acc: {avg_acc:.4f}")
+
+    return avg_loss, avg_acc
+
 
 def fine_tune(
     batch_size: int = 32,
@@ -244,8 +361,9 @@ def fine_tune(
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-        loss, acc = evaluate(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, test_name=name, save_dir="./logs")
+        loss, acc = evaluate_mc(classifier, test_loader, criterion, device,
+                     rel_module=rel_module, test_name=name, save_dir="./logs_mc", n_classes=n_classes)
+
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     # --- Append evaluation results to CSV ---
@@ -286,10 +404,10 @@ def fine_tune(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=1)
+    parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_samples', type=int, default=None,
@@ -314,8 +432,8 @@ if __name__ == "__main__":
     # NEW CLI args for checkpoint load/save
     parser.add_argument('--load_checkpoint', action='store_true',
                         help="If set, attempt to load weights from --checkpoint_file before training (default: False).")
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO_mc.pth',
-                        help="Path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)")
+    parser.add_argument('--checkpoint_file', type=str, default='checkpoint_mc/checkpoint_HELLO_mc.pth',
+                        help="Path to load/save classifier weights (default: checkpoint_mc/checkpoint_HELLO.pth)")
     parser.add_argument('--n_classes', type=int, default=7,
                         help="Number of classes for the classifier (default: 7)")
 

@@ -40,7 +40,6 @@ import logging
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import get_device
 
 logger = logging.getLogger(__name__)
 
