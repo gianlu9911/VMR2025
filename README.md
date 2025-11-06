@@ -27,7 +27,7 @@ Partendo da due modelli preaddestrati di classificatori, ognuno addestrato su un
 ### 3.1. Clona il Github
 
  ```sh
- git clone https://github.com/aciam1/VMR-2025
+ git clone https://github.com/gianlu9911/VMR2025.git
  ```
 	
   Scarica i modelli preaddestrati da [qui](https://drive.google.com/file/d/1pgEfMGcDztpPXupiuX33wzfjehHYLIMa/view?usp=drive_link) e scompatta direttamente la cartella.
