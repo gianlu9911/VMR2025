@@ -42,9 +42,11 @@ bash ./create_and_configure_env.sh vmr2025
    Alternativamente si può prima creare un ambiente conda con python 3.10.16, poi installare i pacchetti usando lo script bash `install_requirements.sh`: 
 	
 ```sh
-conda create -n myenv python=3.10.16
-conda activate myenv
-bash ./install_requirements.sh
+conda create -n vmr2025 python=3.10.16
+conda activate vm2025
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+pip3 install -U scikit-learn
+pip3 install seaborn
 ```
 	
 ### 3.3. Esperimenti
