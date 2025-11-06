@@ -3,8 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-from tqdm import tqdm
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import numpy as np
 import torch
@@ -18,131 +17,15 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 # === Project imports - adjust these to your repo layout ===
-from config import PRETRAINED_MODELS
-from src.g_dataloader import RealSyntheticDataloaderMC as RealSynthethicDataloader
+from config import PRETRAINED_MODELS, IMAGE_DIR
+from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier,  train_one_epoch, plot_features_with_anchors
+from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch
+from src.g_utils import plot_features_with_anchors2 as plot_features_with_anchors
 
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
 # ---------------------------------------------
-def extract_and_save_features(backbone, dataloader, feature_path, device, split='train_set'):
-    feats, labels = [], []
-    print(f"Saving features to {feature_path}...")
-
-    start_time = time.time()
-    backbone.eval()
-    with torch.no_grad():
-        for imgs, lbls in tqdm(dataloader, desc=f"Extracting {os.path.basename(feature_path)}"):
-            imgs = imgs.to(device)
-            out = backbone(imgs)  # assuming backbone returns feature vector
-            feats.append(out.cpu())
-            labels.append(lbls)
-
-    feats = torch.cat(feats, dim=0)
-    labels = torch.cat(labels, dim=0)
-    total_time = time.time() - start_time
-
-    torch.save({"features": feats, "labels": labels}, feature_path)
-    print(f"Features saved to {feature_path} (time: {total_time/60:.2f} min)")
-    return feats, labels, total_time
-def evaluate_mc(model, dataloader, criterion, device, rel_module=None, test_name="test_set", save_dir="./logs", n_classes=None):
-    model.eval()
-    val_loss, val_acc, num_samples = 0.0, 0.0, 0
-    all_preds, all_labels, all_feats = [], [], []
-
-    os.makedirs(save_dir, exist_ok=True)
-
-    # we'll try to infer num classes from model outputs if n_classes is not provided
-    inferred_n_classes_from_model = None
-
-    with torch.no_grad():
-        for features, labels in dataloader:
-            features, labels = features.to(device), labels.to(device)
-            outputs = model(features)
-            loss = criterion(outputs, labels)
-
-            # try to record model-output classes (if outputs are logits)
-            if n_classes is None and outputs.dim() == 2:
-                inferred_n_classes_from_model = outputs.size(1)
-
-            _, preds = torch.max(outputs, 1)
-            acc = (preds == labels).float().sum().item()  # total correct in batch
-            batch_size = labels.size(0)
-
-            val_loss += loss.item() * batch_size
-            val_acc += acc
-            num_samples += batch_size
-
-            all_preds.append(preds.cpu())
-            all_labels.append(labels.cpu())
-
-            if rel_module is not None:
-                rel_feat = rel_module(features).cpu()
-                all_feats.append(rel_feat)
-
-    if num_samples == 0:
-        raise RuntimeError("Empty dataloader passed to evaluate_mc (no samples).")
-
-    all_preds = torch.cat(all_preds).numpy()
-    all_labels = torch.cat(all_labels).numpy()
-    avg_loss = val_loss / num_samples
-    avg_acc = val_acc / num_samples
-
-    # relative stats
-    if rel_module is not None and len(all_feats) > 0:
-        all_feats = torch.cat(all_feats)
-        df_stats = pd.DataFrame({
-            "label": all_labels,
-            "pred": all_preds,
-            "mean_sim": all_feats.mean(dim=1).numpy(),
-            "std_sim": all_feats.std(dim=1).numpy(),
-            "max_sim": all_feats.max(dim=1)[0].numpy(),
-            "min_sim": all_feats.min(dim=1)[0].numpy()
-        })
-        df_stats.to_csv(os.path.join(save_dir, f"relative_stats_{test_name}.csv"), index=False)
-
-    # determine number of classes robustly
-    if n_classes is None:
-        if inferred_n_classes_from_model is not None:
-            n_classes = int(inferred_n_classes_from_model)
-        else:
-            # fallback: use max label/pred + 1
-            n_classes = int(max(all_labels.max(), all_preds.max()) + 1)
-
-    # ensure at least as many classes as unique labels/preds (prevent accidental truncation)
-    unique_count = len(np.unique(np.concatenate([all_labels, all_preds])))
-    if n_classes < unique_count:
-        n_classes = unique_count
-
-    # compute confusion matrix with explicit labels range
-    cm = confusion_matrix(all_labels, all_preds, labels=np.arange(n_classes))
-
-    plt.figure(figsize=(6,5))
-    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues, alpha=0.85)
-    plt.colorbar()
-    tick_labels = [f"Class {i}" for i in range(n_classes)]
-    plt.xticks(np.arange(n_classes), tick_labels, rotation=45)
-    plt.yticks(np.arange(n_classes), tick_labels)
-    plt.xlabel("Predicted")
-    plt.ylabel("True")
-    plt.title(f"Confusion Matrix - {test_name}")
-
-    thresh = cm.max() / 2.0 if cm.max() > 0 else 0.0
-    for i in range(n_classes):
-        for j in range(n_classes):
-            plt.text(j, i, str(cm[i, j]),
-                     ha="center", va="center",
-                     color="white" if cm[i, j] > thresh else "black",
-                     fontsize=9, fontweight="bold")
-    plt.tight_layout()
-    plt.savefig(os.path.join(save_dir, f"confusion_matrix_{test_name}.png"), dpi=200)
-    plt.close()
-
-    print(f"[{test_name}] - Loss: {avg_loss:.4f}, Acc: {avg_acc:.4f}")
-
-    return avg_loss, avg_acc
-
 
 def fine_tune(
     batch_size: int = 32,
@@ -162,9 +45,11 @@ def fine_tune(
     # NEW: checkpoint handling
     load_checkpoint: bool = False,
     checkpoint_file: str = "checkpoint/checkpoint_HELLO.pth",
-    n_classes: int = 2,
-
+    # NEW: feature-saving during evaluation
+    save_feats: bool = False,
+    save_feats_prefix: str = None,
 ):
+
     """Fine-tune relative-representation classifier.
 
     load_checkpoint: if True, attempt to load checkpoint_file into the classifier before training.
@@ -176,8 +61,8 @@ def fine_tune(
     device = torch.device("cuda:"+device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    feature_dir = f"./feature_mc_{backbone}"
-    checkpoint_dir = "./checkpoint_mc"
+    feature_dir = f"./feature_{backbone}"
+    checkpoint_dir = "./checkpoint"
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
     # ensure directory for custom checkpoint_file exists
@@ -196,8 +81,8 @@ def fine_tune(
     backbone_net.eval()
 
     # Dataset directories
-    real_dir = 'real'
-    fake_dir = fine_tuning_on
+    real_dir = IMAGE_DIR['real']
+    fake_dir = IMAGE_DIR[fine_tuning_on]
 
     dataset = RealSynthethicDataloader(real_dir, fake_dir)
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
@@ -214,7 +99,6 @@ def fine_tune(
         feats_full, labels_full = data["features"], data["labels"]
         feat_time_full = 0.0
         print("Loaded cached full training features")
-    print(f"Labels in training set: {pd.Series(labels_full.numpy()).value_counts().to_dict()}")
 
     # Subsample training samples if requested
     if num_train_samples is None:
@@ -230,7 +114,7 @@ def fine_tune(
         feats = feats_full
         labels = labels_full
 
-    print(f"Using {len(feats)} training samples (real: {(labels==0).sum().item()}, stylegan1: {(labels==1).sum().item()}, stylegan2: {(labels==2).sum().item()}, sdv1_4:{(labels==3).sum().item()},stylegan3: {(labels==4).sum().item()}, stylegan_xl: {(labels==5).sum().item()}, sdv2_1: {(labels==6).sum().item()}) for fine-tuning on {fine_tuning_on}")
+    print(f"Using {len(feats)} training samples (real: {(labels==0).sum().item()}, fake: {(labels==1).sum().item()})")
 
     # Anchors (take from real training features only, allow sampling WITH replacement
     real_mask = labels == 0
@@ -266,7 +150,7 @@ def fine_tune(
     feat_loader = DataLoader(feat_dataset, batch_sampler=sampler)
 
     # Classifier
-    classifier = RelClassifier(rel_module, anchors.size(0), num_classes=n_classes).to(device)
+    classifier = RelClassifier(rel_module, anchors.size(0), num_classes=2).to(device)
 
     # NEW: load checkpoint into classifier if requested
     if load_checkpoint:
@@ -318,12 +202,12 @@ def fine_tune(
 
     # Prepare test datasets
     dataloaders_test = {
-        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, 'stylegan1', split='test_set'),
-        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, 'stylegan2', split='test_set'),
-        "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, 'sdv1_4', split='test_set'),
-        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, 'stylegan3', split='test_set'),
-        "real_vs_styleganxl": RealSynthethicDataloader(real_dir, 'stylegan_xl', split='test_set'),
-        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, 'sdv2_1', split='test_set'), 
+        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
+        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
+                "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set')
+,        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+        "real_vs_stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
     }
 
     test_results = {}
@@ -336,34 +220,61 @@ def fine_tune(
                                 num_workers=num_workers)
             feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
                                                                           feat_file_test, device, split='test_set')
-            
         else:
             data = torch.load(feat_file_test)
             feats_test, labels_test = data["features"], data["labels"]
             feat_time = 0.0
             print("Loaded cached test features")
-        print(f"[DEBUG] Labels in {name} test set: {pd.Series(labels_test.numpy()).value_counts().to_dict()}")
+
         # Plot anchors + eval real + eval fake
         # anchors is available (torch tensor on device) -> move to cpu for plotting
+                # Plot anchors + eval real + eval fake
         anchors_cpu = anchors.cpu()
-        #real_mask_eval = (labels_test == 0)
-        #fake_mask_eval = (labels_test == 1)
-        #real_feats_eval = feats_test[real_mask_eval]
-        #fake_feats_eval = feats_test[fake_mask_eval]
+        real_mask_eval = (labels_test == 0)
+        fake_mask_eval = (labels_test == 1)
+        real_feats_eval = feats_test[real_mask_eval]
+        fake_feats_eval = feats_test[fake_mask_eval]
 
-        #plot_save_path = os.path.join("./logs", f"feature_plot_{name}_{plot_method}.png")
-        #os.makedirs("./logs", exist_ok=True)
-        #plot_features_with_anchors(real_feats_eval, fake_feats_eval, anchors_cpu,
-                                   #method=plot_method, save_path=plot_save_path,
-                                   #subsample=plot_subsample)
+        # Prepare save paths
+        os.makedirs("./logs", exist_ok=True)
+        plot_save_path = os.path.join("./logs", f"feature_plot_{name}_{plot_method}.png")
+
+        # Determine prefix for saving full feature arrays (if requested)
+        # Default prefix places files under feature_dir with dataset name
+        default_prefix = os.path.join(feature_dir, f"{name}_eval_feats")
+        prefix_to_use = save_feats_prefix if save_feats_prefix is not None else default_prefix
+
+
+        # Call plotting function; when save_feats=True it will save the FULL (pre-subsample) arrays
+        plot_features_with_anchors(
+            real_feats_eval, fake_feats_eval, anchors_cpu,
+            method=plot_method, save_path=plot_save_path,
+            subsample=plot_subsample,
+            save_feats=save_feats, save_feats_prefix=prefix_to_use, fake_type=name.split('_')[-1]
+        )
+        
+        relative_real_feat = rel_module(real_feats_eval.to(device)).to(device)
+        relative_fake_feat = rel_module(fake_feats_eval.to(device)).to(device)
+        relative_anchor_feat = rel_module(anchors.to(device)).to(device)
+
+        plot_features_with_anchors(
+            relative_real_feat, relative_fake_feat, relative_anchor_feat,
+            method=plot_method, save_path=plot_save_path.replace('.png', '_relative.png'),
+            subsample=plot_subsample,
+            save_feats=save_feats,  # No need to save relative features separately
+            save_feats_prefix=prefix_to_use + "_relative",
+            fake_type=name.split('_')[-1]
+        )
+
+        
+
 
         # Evaluate classifier on test features
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
-        loss, acc = evaluate_mc(classifier, test_loader, criterion, device,
-                     rel_module=rel_module, test_name=name, save_dir="./logs_mc", n_classes=n_classes)
-
+        loss, acc = evaluate(classifier, test_loader, criterion, device,
+                             rel_module=rel_module, test_name=name, save_dir="./logs")
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     # --- Append evaluation results to CSV ---
@@ -380,7 +291,7 @@ def fine_tune(
 
     # Default path if not provided
     if eval_csv_path is None:
-        eval_csv_path = os.path.join('logs_mc', 'test_accuracies.csv')
+        eval_csv_path = os.path.join('logs', 'test_accuracies.csv')
     os.makedirs(os.path.dirname(eval_csv_path), exist_ok=True)
 
     with open(eval_csv_path, 'a') as f:
@@ -404,10 +315,10 @@ def fine_tune(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_samples', type=int, default=None,
@@ -426,26 +337,27 @@ if __name__ == "__main__":
                         help="Max number of eval points (real+fake) to plot (anchors always included)")
     parser.add_argument('--force_recompute_features', action='store_true',
                         help="Force recomputation of saved features")
-    parser.add_argument('--eval_csv_path', type=str, default='./logs_mc/eval_results_mc.csv',
-                        help='Optional path to evaluation CSV (default: ./logs/eval_results_mc.csv)')
+    parser.add_argument('--eval_csv_path', type=str, default=None,
+                        help='Optional path to evaluation CSV (default: ./logs/eval_results.csv)')
 
     # NEW CLI args for checkpoint load/save
     parser.add_argument('--load_checkpoint', action='store_true',
                         help="If set, attempt to load weights from --checkpoint_file before training (default: False).")
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint_mc/checkpoint_HELLO_mc.pth',
-                        help="Path to load/save classifier weights (default: checkpoint_mc/checkpoint_HELLO.pth)")
-    parser.add_argument('--n_classes', type=int, default=7,
-                        help="Number of classes for the classifier (default: 7)")
+    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO.pth',
+                        help="Path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)")
+    parser.add_argument('--save_feats', action='store_true',
+                        help="If set, save the FULL feature arrays (real/fake/anchors) for each test set during evaluation.")
+    parser.add_argument('--save_feats_prefix', type=str, default='saved_numpy_features/step_prova',
+                        help="Optional prefix (path+name) to use for saved feature .npy files. "
+                             "If not provided, defaults to <feature_dir>/<test_name>_eval_feats")
+
 
     
 
     args = parser.parse_args()
 
     # pass explicit keyword args to the function (no argparse.Namespace usage inside fine_tune)
-    results = fine_tune(**vars(args))
-    test_results = results[0]   # first item
-    anchors = results[1]        # second item
-
+    results, anchors = fine_tune(**vars(args))
     print("All test results:")
-    for k, v in test_results.items():
-        print(f"{k}: Loss {v['loss']:.4f}, Acc {v['acc']:.4f}, Feat_time {v['feat_time']:.2f}s")
+    for k, v in results.items():
+        print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")
