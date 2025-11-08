@@ -47,6 +47,7 @@ conda activate vm2025
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 pip3 install -U scikit-learn
 pip3 install seaborn
+pip install numpy
 ```
 	
 ### 3.3. Esperimenti
