@@ -43,7 +43,7 @@ bash ./create_and_configure_env.sh vmr2025
 	
 ```sh
 conda create -n vmr2025 python=3.10.16
-conda activate vm2025
+conda activate vmr2025
 pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 pip3 install -U scikit-learn
 pip3 install seaborn
