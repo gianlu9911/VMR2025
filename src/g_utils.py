@@ -4,7 +4,6 @@ import time
 import argparse
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import numpy as np
 import torch
@@ -452,6 +451,83 @@ def plot_features_with_anchors2(real_feats, fake_feats, anchors,
 
     if return_features:
         return real_np, fake_np, anchor_np, X2, y
+
+        import numpy as np
+import torch
+import os
+
+def save_features_only(real_feats, fake_feats, anchors,
+                       subsample=5000, random_state=42,
+                       save_feats_prefix: str = "feats",
+                       fake_type: str = "00",
+                       return_features: bool = False,
+                       confirm: bool = False):
+    """
+    Saves real, fake, and anchor features as .npy files.
+    Optionally subsamples real and fake (anchors always kept full).
+
+    Args:
+        real_feats, fake_feats, anchors: torch.Tensor or np.ndarray, shape [N, D]
+        subsample: maximum total of (real + fake) to keep (anchors always included)
+        save_feats_prefix: path/prefix for files (e.g. "saved_numpy_features/step_stylegan2_relative")
+        fake_type: appended to fake file name (e.g. "stylegan1")
+        return_features: if True, returns the arrays used for saving
+        confirm: if True, waits for user confirmation before saving
+    """
+    # --- Convert to numpy ---
+    to_np = lambda x: x.cpu().numpy() if isinstance(x, torch.Tensor) else np.array(x)
+    real_np_full = to_np(real_feats)
+    fake_np_full = to_np(fake_feats)
+    anchor_np_full = to_np(anchors)
+
+    # --- Prepare filenames ---
+    real_file = f"{save_feats_prefix}_real.npy"
+    fake_file = f"{save_feats_prefix}_fake_{fake_type}.npy"
+    anchor_file = f"{save_feats_prefix}_anchors.npy"
+
+    # Print them before saving
+    print("\n[save] The following files will be created:")
+    print(f"  🟢 Real   → {real_file}")
+    print(f"  🔵 Fake   → {fake_file}")
+    print(f"  🟠 Anchors → {anchor_file}")
+
+    if confirm:
+        proceed = input("Proceed with saving? [y/N]: ").strip().lower()
+        if proceed != "y":
+            print("❌ Save cancelled by user.")
+            return
+
+    # --- Subsampling (if needed) ---
+    n_real, n_fake = len(real_np_full), len(fake_np_full)
+    total_points = n_real + n_fake
+    if total_points > subsample > 0:
+        prop_real = n_real / total_points
+        keep_real = int(round(subsample * prop_real))
+        keep_fake = subsample - keep_real
+        rng = np.random.default_rng(seed=random_state)
+        real_idx = rng.choice(n_real, size=max(1, keep_real), replace=False)
+        fake_idx = rng.choice(n_fake, size=max(1, keep_fake), replace=False)
+        real_np = real_np_full[real_idx]
+        fake_np = fake_np_full[fake_idx]
+        print(f"[save] Subsampled to {len(real_np)} real and {len(fake_np)} fake points")
+    else:
+        real_np, fake_np = real_np_full, fake_np_full
+        print(f"[save] Using all {n_real} real and {n_fake} fake points")
+
+    # --- Create directory ---
+    prefix_dir = os.path.dirname(save_feats_prefix)
+    if prefix_dir:
+        os.makedirs(prefix_dir, exist_ok=True)
+
+    # --- Save .npy files ---
+    np.save(real_file, real_np_full)
+    np.save(fake_file, fake_np_full)
+    np.save(anchor_file, anchor_np_full)
+    print(f"[save] ✅ Saved FULL features:\n  {real_file}\n  {fake_file}\n  {anchor_file}")
+
+    if return_features:
+        return real_np, fake_np, anchor_np
+
 
 def plot_features_with_anchors(real_feats, fake_feats, anchors, method="pca", save_path=None, subsample=5000, random_state=42):
     """
