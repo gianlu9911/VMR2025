@@ -2,8 +2,10 @@
 import os
 import time
 import warnings
+
+from sympy import re
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import numpy as np
 import torch
@@ -21,7 +23,7 @@ from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch
-from src.g_utils import plot_features_with_anchors2 as plot_features_with_anchors
+from src.g_utils import save_features_only
 
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
@@ -204,10 +206,10 @@ def fine_tune(
     dataloaders_test = {
         "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
         "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-                "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set')
+        "real_vs_sdv14": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set')
 ,        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
         "real_vs_styleganxl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
+        "real_vs_sdv21": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
     }
 
     test_results = {}
@@ -215,25 +217,85 @@ def fine_tune(
         feat_file_test = os.path.join(feature_dir, f"test_{name}_features.pt")
         print(f"Preparing test features for {name} -> {feat_file_test}")
 
-        if force_recompute_features or not os.path.exists(feat_file_test):
-            loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                                 num_workers=num_workers)
-            feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
+        feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
                                                                           feat_file_test, device, split='test_set')
-        else:
-            data = torch.load(feat_file_test)
-            feats_test, labels_test = data["features"], data["labels"]
-            feat_time = 0.0
-            print("Loaded cached test features")
+
+        anchors_cpu = rel_module(anchors.to(device)).cpu()
+        real_mask_eval = (labels_test == 0)
+        fake_mask_eval = (labels_test == 1)
+        real_feats_eval = feats_test[real_mask_eval]
+        real_feats_eval = rel_module(real_feats_eval.to(device)).cpu()
+        fake_feats_eval = feats_test[fake_mask_eval]
+        fake_feats_eval = rel_module(fake_feats_eval.to(device)).cpu()
+
+        # === NEW: Save full features for analysis ===
+        if save_feats:
+            os.makedirs("saved_numpy_features", exist_ok=True)
+            import re
+            # Derive fake type and step/domain
+            fake_type = re.sub(r'^.*real_vs_', '', name)  # e.g. "real_vs_sdv2_1" -> "sdv21"
+            domain = fine_tuning_on.replace("_", "") # e.g. "sdv2_1" or "stylegan2"
+            prefix_to_use = os.path.join("saved_numpy_features", f"step_{domain}")
+
+            print(f"[save_feats] Preparing to save features for domain={domain}, fake_type={fake_type}")
+            print(f"[save_feats] Prefix will be: {prefix_to_use}")
+
+            # Actually save
+                            # --- Save features directly (no helper) ---
+            try:
+                # ensure output dir exists
+                os.makedirs("saved_numpy_features", exist_ok=True)
+
+                # prepare names
+                import re as _re  # evita sovrascritture
+                fake_type = _re.sub(r'^.*real_vs_', '', name).split('*')[0]
+                domain = fine_tuning_on.replace("_", "")
+                prefix_to_use = os.path.join("saved_numpy_features", f"step_{domain}")
+
+                real_file = f"{prefix_to_use}_real.npy"
+                fake_file = f"{prefix_to_use}_fake_{fake_type}.npy"
+                anchors_file = f"{prefix_to_use}_anchors.npy"
+
+                # Print filenames to be used
+                print(f"[save_feats] Will save files:")
+                print(f"   Real   -> {real_file}")
+                print(f"   Fake   -> {fake_file}")
+                print(f"   Anchors-> {anchors_file}")
+
+                # Convert to numpy (they are CPU tensors already per your code)
+                real_np = real_feats_eval.cpu().numpy() if isinstance(real_feats_eval, torch.Tensor) else np.array(real_feats_eval)
+                fake_np = fake_feats_eval.cpu().numpy() if isinstance(fake_feats_eval, torch.Tensor) else np.array(fake_feats_eval)
+                anchors_np = anchors_cpu.cpu().numpy() if isinstance(anchors_cpu, torch.Tensor) else np.array(anchors_cpu)
+
+                # Save only if non-empty, otherwise warn
+                if real_np.size == 0:
+                    print(f"[save_feats] ⚠️ real features for {name} is empty — skipping saving {real_file}")
+                else:
+                    np.save(real_file, real_np)
+                    print(f"[save_feats] Saved real -> {real_file}")
+
+                if fake_np.size == 0:
+                    print(f"[save_feats] ⚠️ fake features for {name} is empty — skipping saving {fake_file}")
+                else:
+                    np.save(fake_file, fake_np)
+                    print(f"[save_feats] Saved fake -> {fake_file}")
+
+                if anchors_np.size == 0:
+                    print(f"[save_feats] ⚠️ anchors is empty — skipping saving {anchors_file}")
+                else:
+                    np.save(anchors_file, anchors_np)
+                    print(f"[save_feats] Saved anchors -> {anchors_file}")
+
+            except Exception as e:
+                print(f"[save_feats] ERROR while saving features for {name}: {e}")
+
+
 
         # Plot anchors + eval real + eval fake
         # anchors is available (torch tensor on device) -> move to cpu for plotting
                 # Plot anchors + eval real + eval fake
-        anchors_cpu = anchors.cpu()
-        real_mask_eval = (labels_test == 0)
-        fake_mask_eval = (labels_test == 1)
-        real_feats_eval = feats_test[real_mask_eval]
-        fake_feats_eval = feats_test[fake_mask_eval]
 
         # Prepare save paths
         os.makedirs("./logs", exist_ok=True)
@@ -242,28 +304,9 @@ def fine_tune(
         # Determine prefix for saving full feature arrays (if requested)
         # Default prefix places files under feature_dir with dataset name
         default_prefix = os.path.join(feature_dir, f"{name}_eval_feats")
-        prefix_to_use = save_feats_prefix if save_feats_prefix is not None else default_prefix
 
-
-        # Call plotting function; when save_feats=True it will save the FULL (pre-subsample) arrays
-        plot_features_with_anchors(
-            real_feats_eval, fake_feats_eval, anchors_cpu,
-            method=plot_method, save_path=plot_save_path,
-            subsample=plot_subsample,
-            save_feats=save_feats, save_feats_prefix=prefix_to_use, fake_type=name.split('_')[-1]
-        )
         
-        relative_real_feat = rel_module(real_feats_eval.to(device)).to(device)
-        relative_fake_feat = rel_module(fake_feats_eval.to(device)).to(device)
-        relative_anchor_feat = rel_module(anchors.to(device)).to(device)
 
-        plot_features_with_anchors(
-            relative_real_feat, relative_fake_feat, relative_anchor_feat,
-            method=plot_method, save_path=plot_save_path.replace('.png', '_relative.png'),
-            subsample=plot_subsample,
-            save_feats=False,  # No need to save relative features separately
-            fake_type=name.split('_')[-1]
-        )
 
         
 
