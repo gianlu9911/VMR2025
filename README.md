@@ -48,6 +48,7 @@ pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu12
 pip3 install -U scikit-learn
 pip3 install seaborn
 pip install numpy
+pip install tqdm
 ```
 	
 ### 3.3. Esperimenti
