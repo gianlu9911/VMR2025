@@ -5,22 +5,22 @@ import torch.nn.functional as F
 import os
 import os.path as osp
 
-root_folder = "saved_numpy_features"
-a = np.load(osp.join(root_folder, "step_sdv1_4_anchors.npy"))
-b = np.load(osp.join(root_folder, "step_stylegan1_anchors.npy"))
+root_folder = "logs/logits"
+a = np.load(osp.join(root_folder, "logits_real_step_sdv1_4.npy"))
+b = np.load(osp.join(root_folder, "logits_real_step_stylegan1.npy"))
 
 # check if the features are the same
 print("Are the features equal?", np.array_equal(a, b))
 # print distance between the features
-print("Distance between features:", np.linalg.norm(a - b))
+print("Distance between real logits:", np.linalg.norm(a - b))
 
 
-c = np.load("saved_numpy_features/step_stylegan_xl_fake_stylegan1.npy")
-d = np.load("saved_numpy_features/step_stylegan1_fake_stylegan1.npy")
-e = np.load("saved_numpy_features/step_sdv21_fake_stylegan2.npy")
+c = np.load("logs/logits/logits_step_stylegan1_faktype_stylegan1.npy")
+d = np.load("logs/logits/logits_step_sdv1_4_faktype_stylegan1.npy")
+#e = np.load("saved_numpy_features/step_sdv21_fake_stylegan2.npy")
 # check if the features are the same
 print("Are the fake features equal?", np.array_equal(c, d))
 # print distance between the features
 print("Distance between fake features:", np.linalg.norm(c - d))
 # check distance between sdv21 and stylegan2 features
-print("Distance between sdv21 and stylegan2 fake features:", np.linalg.norm(c - e))
+#print("Distance between sdv21 and stylegan2 fake features:", np.linalg.norm(c - e))

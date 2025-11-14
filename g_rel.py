@@ -5,7 +5,7 @@ import warnings
 
 from sympy import re
 warnings.filterwarnings("ignore")
-#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import numpy as np
 import torch
@@ -212,6 +212,9 @@ def fine_tune(
         "real_vs_sdv21": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
     }
 
+   
+        
+
     test_results = {}
     for name, dataset in dataloaders_test.items():
         feat_file_test = os.path.join(feature_dir, f"test_{name}_features.pt")
@@ -223,73 +226,18 @@ def fine_tune(
                                                                           feat_file_test, device, split='test_set')
 
         anchors_cpu = rel_module(anchors.to(device)).cpu()
+        os.makedirs("./logs/relative", exist_ok=True)
         real_mask_eval = (labels_test == 0)
         fake_mask_eval = (labels_test == 1)
         real_feats_eval = feats_test[real_mask_eval]
         real_feats_eval = rel_module(real_feats_eval.to(device)).cpu()
+        np.save(osp.join("./logs/relative", f"relative_step{fine_tuning_on}_{name}_real.npy"), real_feats_eval.numpy())
         fake_feats_eval = feats_test[fake_mask_eval]
         fake_feats_eval = rel_module(fake_feats_eval.to(device)).cpu()
+        fakesubtype = name.split('_vs_')[1]
+        np.save(osp.join("./logs/relative", f"relative_step{fine_tuning_on}_{name}_faketype_{fakesubtype}.npy"), fake_feats_eval.numpy())
 
-        # === NEW: Save full features for analysis ===
-        if save_feats:
-            os.makedirs("saved_numpy_features", exist_ok=True)
-            import re
-            # Derive fake type and step/domain
-            fake_type = re.sub(r'^.*real_vs_', '', name)  # e.g. "real_vs_sdv2_1" -> "sdv21"
-            domain = fine_tuning_on.replace("_", "") # e.g. "sdv2_1" or "stylegan2"
-            prefix_to_use = os.path.join("saved_numpy_features", f"step_{domain}")
 
-            print(f"[save_feats] Preparing to save features for domain={domain}, fake_type={fake_type}")
-            print(f"[save_feats] Prefix will be: {prefix_to_use}")
-
-            # Actually save
-                            # --- Save features directly (no helper) ---
-            try:
-                # ensure output dir exists
-                os.makedirs("saved_numpy_features", exist_ok=True)
-
-                # prepare names
-                import re as _re  # evita sovrascritture
-                fake_type = _re.sub(r'^.*real_vs_', '', name).split('*')[0]
-                domain = fine_tuning_on.replace("_", "")
-                prefix_to_use = os.path.join("saved_numpy_features", f"step_{domain}")
-
-                real_file = f"{prefix_to_use}_real.npy"
-                fake_file = f"{prefix_to_use}_fake_{fake_type}.npy"
-                anchors_file = f"{prefix_to_use}_anchors.npy"
-
-                # Print filenames to be used
-                print(f"[save_feats] Will save files:")
-                print(f"   Real   -> {real_file}")
-                print(f"   Fake   -> {fake_file}")
-                print(f"   Anchors-> {anchors_file}")
-
-                # Convert to numpy (they are CPU tensors already per your code)
-                real_np = real_feats_eval.cpu().numpy() if isinstance(real_feats_eval, torch.Tensor) else np.array(real_feats_eval)
-                fake_np = fake_feats_eval.cpu().numpy() if isinstance(fake_feats_eval, torch.Tensor) else np.array(fake_feats_eval)
-                anchors_np = anchors_cpu.cpu().numpy() if isinstance(anchors_cpu, torch.Tensor) else np.array(anchors_cpu)
-
-                # Save only if non-empty, otherwise warn
-                if real_np.size == 0:
-                    print(f"[save_feats] ⚠️ real features for {name} is empty — skipping saving {real_file}")
-                else:
-                    np.save(real_file, real_np)
-                    print(f"[save_feats] Saved real -> {real_file}")
-
-                if fake_np.size == 0:
-                    print(f"[save_feats] ⚠️ fake features for {name} is empty — skipping saving {fake_file}")
-                else:
-                    np.save(fake_file, fake_np)
-                    print(f"[save_feats] Saved fake -> {fake_file}")
-
-                if anchors_np.size == 0:
-                    print(f"[save_feats] ⚠️ anchors is empty — skipping saving {anchors_file}")
-                else:
-                    np.save(anchors_file, anchors_np)
-                    print(f"[save_feats] Saved anchors -> {anchors_file}")
-
-            except Exception as e:
-                print(f"[save_feats] ERROR while saving features for {name}: {e}")
 
 
 
@@ -314,9 +262,10 @@ def fine_tune(
         # Evaluate classifier on test features
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-
+        fake_s = name.split('_vs_')[1]
+        print(f"Evaluating classifier on {name} test set (fake subtype: {fake_s})...")
         loss, acc = evaluate(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, test_name=name, save_dir="./logs")
+                             rel_module=rel_module, test_name=name, save_dir="./logs", step=fine_tuning_on, fake_subtype=fake_s)
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     # --- Append evaluation results to CSV ---
@@ -357,10 +306,10 @@ def fine_tune(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--batch_size', type=int, default=512)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_samples', type=int, default=None,
