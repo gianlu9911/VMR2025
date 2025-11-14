@@ -49,6 +49,7 @@ pip3 install -U scikit-learn
 pip3 install seaborn
 pip install numpy
 pip install tqdm
+pip install -U scikit-learn
 ```
 	
 ### 3.3. Esperimenti
