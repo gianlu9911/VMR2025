@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
-
+import re
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn.metrics import confusion_matrix
@@ -277,8 +277,11 @@ def run_sequential_finetunes(
 # Example usage (put under your __main__ guard or call from other code):
 if __name__ == "__main__":
     # quick example: run short experiments for debugging
+    order = ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',]
+    randminzed_order = np.random.permutation(order).tolist()
+    print(f"Running sequential fine-tunes in order: {randminzed_order}")
     all_results = run_sequential_finetunes(
-        order=['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
+        order=randminzed_order,
         checkpoint_file="checkpoint/checkpoint_HELLO.pth",
         # any args forwarded to fine_tune:
         epochs=5,

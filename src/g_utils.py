@@ -745,6 +745,135 @@ def evaluate_mc(model, dataloader, criterion, device, rel_module=None,
     return avg_loss, avg_acc
 
 
+def evaluate3(
+    model,
+    dataloader,
+    criterion,
+    device,
+    rel_module=None,
+    test_name="test_set",
+    save_dir="./logs",
+    task_name=None,          # e.g. "stylegan2"
+    fake_type=None           # e.g. "styleganxl"
+):
+    model.eval()
+    val_loss, val_acc, num_samples = 0.0, 0.0, 0
+    all_preds, all_labels, all_feats = [], [], []
+
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(os.path.join(save_dir, "logits"), exist_ok=True)
+    os.makedirs(os.path.join(save_dir, "relative"), exist_ok=True)
+    real_logits_list = []
+    fake_logits_list = []
+    with torch.no_grad():
+        for features, labels in dataloader:
+            features, labels = features.to(device), labels.to(device)
+            outputs = model(features)
+            real_logits = outputs[labels == 0]
+            real_logits_list.append(real_logits.cpu())
+            fake_logits = outputs[labels != 0]
+            fake_logits_list.append(fake_logits.cpu())
+
+            loss = criterion(outputs, labels)
+
+            _, preds = torch.max(outputs, 1)
+            acc = (preds == labels).float().mean().item()
+
+            batch_size = labels.size(0)
+            val_loss += loss.item() * batch_size
+            val_acc += acc * batch_size
+            num_samples += batch_size
+
+            all_preds.append(preds.cpu())
+            all_labels.append(labels.cpu())
+
+            if rel_module is not None:
+                rel_feat = rel_module(features).cpu()  # [batch, num_anchors]
+                all_feats.append(rel_feat)
+
+    all_preds = torch.cat(all_preds).numpy()
+    all_labels = torch.cat(all_labels).numpy()
+    np.save(os.path.join(save_dir, f"logits/real_step_{task_name}.npy"), torch.cat(real_logits_list).numpy())
+    np.save(os.path.join(save_dir, f"logits/fake_step_{task_name}_faketype_{fake_type}.npy"), torch.cat(fake_logits_list).numpy())
+    print(f"Logits saved to {save_dir}/logits/")
+
+    # --- If rel_module is provided, collect statistics ---
+    if rel_module is not None and len(all_feats) > 0:
+        all_feats = torch.cat(all_feats)  # [N, num_anchors]
+        real_rel_feats = all_feats[all_labels == 0]
+        fake_rel_feats = all_feats[all_labels != 0]
+        np.save(os.path.join(save_dir, f"relative/real_step_{task_name}.npy"), real_rel_feats.numpy())
+        np.save(os.path.join(save_dir, f"relative/fake_step_{task_name}_faketype_{fake_type}.npy"), fake_rel_feats.numpy())
+        print(f"Relative features saved to {save_dir}/relative/")
+        mean_sim = all_feats.mean(dim=1).numpy()
+        std_sim  = all_feats.std(dim=1).numpy()
+        max_sim  = all_feats.max(dim=1)[0].numpy()
+        min_sim  = all_feats.min(dim=1)[0].numpy()
+
+        df_stats = pd.DataFrame({
+            "label": all_labels,
+            "pred": all_preds,
+            "mean_sim": mean_sim,
+            "std_sim": std_sim,
+            "max_sim": max_sim,
+            "min_sim": min_sim
+        })
+
+        # --- Save relative feature stats ---
+        csv_name = f"relative_stats_{test_name}"
+        if task_name: csv_name += f"_{task_name}"
+        if fake_type: csv_name += f"_{fake_type}"
+        csv_name += ".csv"
+
+        csv_path = os.path.join(save_dir, csv_name)
+        df_stats.to_csv(csv_path, index=False)
+        print(f"Relative feature statistics saved to {csv_path}")
+
+
+
+    # --- Confusion matrix ---
+    cm = confusion_matrix(all_labels, all_preds)
+    plt.figure(figsize=(5,4))
+    plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues, alpha=0.85)
+    plt.colorbar()
+
+    tick_labels = ["Real", "Fake"] if cm.shape == (2,2) else list(range(cm.shape[0]))
+    plt.xticks(np.arange(len(tick_labels)), tick_labels, rotation=45)
+    plt.yticks(np.arange(len(tick_labels)), tick_labels)
+    plt.xlabel("Predicted")
+    plt.ylabel("True")
+
+    title = f"Confusion Matrix - {test_name}"
+    if task_name: title += f" ({task_name})"
+    if fake_type: title += f" [{fake_type}]"
+    plt.title(title)
+
+    thresh = cm.max() / 2.0
+    for i in range(cm.shape[0]):
+        for j in range(cm.shape[1]):
+            count = cm[i, j]
+            plt.text(j, i, str(count),
+                    ha="center", va="center",
+                    color="white" if count > thresh else "black",
+                    fontsize=10, fontweight="bold")
+
+    plt.tight_layout()
+
+    cm_filename = f"confusion_matrix_{test_name}"
+    if task_name: cm_filename += f"_{task_name}"
+    if fake_type: cm_filename += f"_{fake_type}"
+    cm_filename += ".png"
+
+    cm_path = os.path.join(save_dir, cm_filename)
+    plt.savefig(cm_path, dpi=200)
+    plt.close()
+    print(f"Confusion matrix saved to {cm_path}")
+
+    avg_loss = val_loss / num_samples
+    avg_acc = val_acc / num_samples
+    print(f"[{test_name}] - Loss: {avg_loss:.4f}, Acc: {avg_acc:.4f}")
+
+    return avg_loss, avg_acc
 
 
 def evaluate(model, dataloader, criterion, device, rel_module=None, test_name="test_set", save_dir="./logs"):

@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 
-from sympy import re
+
 warnings.filterwarnings("ignore")
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
@@ -17,13 +17,14 @@ from sklearn.manifold import TSNE
 from sklearn.metrics import confusion_matrix
 import matplotlib.pyplot as plt
 import pandas as pd
+import re 
 
 # === Project imports - adjust these to your repo layout ===
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch
-from src.g_utils import save_features_only
+from src.g_utils import evaluate3, save_features_only
 
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
@@ -70,6 +71,10 @@ def fine_tune(
     # ensure directory for custom checkpoint_file exists
     checkpoint_file_dir = os.path.dirname(checkpoint_file) if os.path.dirname(checkpoint_file) != '' else checkpoint_dir
     os.makedirs(checkpoint_file_dir, exist_ok=True)
+
+    # New logits output dir
+    logits_eval_root = os.path.join("logits_eval")
+    os.makedirs(logits_eval_root, exist_ok=True)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
@@ -206,14 +211,11 @@ def fine_tune(
     dataloaders_test = {
         "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
         "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-        "real_vs_sdv14": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set')
-,        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+        "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
+        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
         "real_vs_styleganxl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "real_vs_sdv21": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
+        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
     }
-
-   
-        
 
     test_results = {}
     for name, dataset in dataloaders_test.items():
@@ -225,47 +227,15 @@ def fine_tune(
         feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
                                                                           feat_file_test, device, split='test_set')
 
-        anchors_cpu = rel_module(anchors.to(device)).cpu()
-        os.makedirs("./logs/relative", exist_ok=True)
-        real_mask_eval = (labels_test == 0)
-        fake_mask_eval = (labels_test == 1)
-        real_feats_eval = feats_test[real_mask_eval]
-        real_feats_eval = rel_module(real_feats_eval.to(device)).cpu()
-        np.save(osp.join("./logs/relative", f"relative_step{fine_tuning_on}_{name}_real.npy"), real_feats_eval.numpy())
-        fake_feats_eval = feats_test[fake_mask_eval]
-        fake_feats_eval = rel_module(fake_feats_eval.to(device)).cpu()
-        fakesubtype = name.split('_vs_')[1]
-        np.save(osp.join("./logs/relative", f"relative_step{fine_tuning_on}_{name}_faketype_{fakesubtype}.npy"), fake_feats_eval.numpy())
-
-
-
-
-
-        # Plot anchors + eval real + eval fake
-        # anchors is available (torch tensor on device) -> move to cpu for plotting
-                # Plot anchors + eval real + eval fake
-
-        # Prepare save paths
-        os.makedirs("./logs", exist_ok=True)
-        plot_save_path = os.path.join("./logs", f"feature_plot_{name}_{plot_method}.png")
-
-        # Determine prefix for saving full feature arrays (if requested)
-        # Default prefix places files under feature_dir with dataset name
-        default_prefix = os.path.join(feature_dir, f"{name}_eval_feats")
-
-        
-
-
-        
-
 
         # Evaluate classifier on test features
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-        fake_s = name.split('_vs_')[1]
-        print(f"Evaluating classifier on {name} test set (fake subtype: {fake_s})...")
-        loss, acc = evaluate(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, test_name=name, save_dir="./logs", step=fine_tuning_on, fake_subtype=fake_s)
+        fake_type = re.sub(r'^.*real_vs_', '', name)
+        print(f"Evaluating on {name} with fake type {fake_type}...")
+        loss, acc = evaluate3(classifier, test_loader, criterion, device,
+                             rel_module=rel_module, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
+                              fake_type=fake_type)
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     # --- Append evaluation results to CSV ---
@@ -306,7 +276,7 @@ def fine_tune(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=1024)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
     parser.add_argument('--epochs', type=int, default=1)
@@ -341,9 +311,6 @@ if __name__ == "__main__":
     parser.add_argument('--save_feats_prefix', type=str, default='saved_numpy_features/step_prova',
                         help="Optional prefix (path+name) to use for saved feature .npy files. "
                              "If not provided, defaults to <feature_dir>/<test_name>_eval_feats")
-
-
-    
 
     args = parser.parse_args()
 
