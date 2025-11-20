@@ -171,91 +171,30 @@ def run_sequential_finetunes(
 
             # --- Compare old anchors and new anchors and save differences + human summaries ---
             if anchros is not None:
-                # If anchors are dictionaries (per-anchor-key), handle per-key
-                if isinstance(new_anchros, dict) and isinstance(anchros, dict):
-                    domain_dir = os.path.join("anchros", domain)
-                    os.makedirs(domain_dir, exist_ok=True)
-
-                    # iterate keys present in both
-                    all_keys = sorted(set(list(new_anchros.keys()) + list(anchros.keys())))
-                    per_key_summary = {}
-                    for key in all_keys:
-                        if key not in anchros or key not in new_anchros:
-                            if verbose:
-                                print(f"Warning: key '{key}' only present in one side. Skipping.")
-                            continue
-
-                        old_arr = to_numpy(anchros[key])
-                        new_arr = to_numpy(new_anchros[key])
-                        if old_arr is None or new_arr is None:
-                            if verbose:
-                                print(f"Skipping key {key} because conversion to numpy failed")
-                            continue
-
-                        # Align shapes: if different, flatten and align to min length
-                        if old_arr.shape != new_arr.shape:
-                            if verbose:
-                                print(f"Warning: shape mismatch for key {key}: old={old_arr.shape}, new={new_arr.shape}. Flattening and aligning to min length.")
-                            old_flat = old_arr.flatten()
-                            new_flat = new_arr.flatten()
-                            min_len = min(old_flat.size, new_flat.size)
-                            diff = new_flat[:min_len] - old_flat[:min_len]
-                        else:
-                            diff = new_arr - old_arr
-
-                        key_dir = os.path.join(domain_dir, str(key))
-                        summary = summarize_and_dump(diff, key_dir, f"{key}")
-                        per_key_summary[key] = summary
-
-                    # Write a combined CSV listing keys and the most important stats
-                    combined_path = os.path.join(domain_dir, "combined_key_summary.csv")
-                    with open(combined_path, 'w', newline='') as cf:
-                        writer = csv.writer(cf)
-                        writer.writerow(["key", "num_elements", "mean", "std", "median", "min", "max", "num_pos", "num_neg", "num_zero"])
-                        for key, s in per_key_summary.items():
-                            writer.writerow([
-                                key,
-                                s.get('num_elements',''),
-                                s.get('mean',''),
-                                s.get('std',''),
-                                s.get('median',''),
-                                s.get('min',''),
-                                s.get('max',''),
-                                s.get('num_positive',''),
-                                s.get('num_negative',''),
-                                s.get('num_zero',''),
-                            ])
-
+                
+                # Treat anchors as single arrays / tensors
+                old_arr = to_numpy(anchros)
+                new_arr = to_numpy(new_anchros)
+                if old_arr is None or new_arr is None:
                     if verbose:
-                        print(f"Saved per-key human-friendly summaries to {domain_dir}")
-
+                        print("Could not convert anchros to numpy arrays for diffing. Skipping.")
                 else:
-                    # Treat anchors as single arrays / tensors
-                    old_arr = to_numpy(anchros)
-                    new_arr = to_numpy(new_anchros)
-                    if old_arr is None or new_arr is None:
+                    # attempt to align shapes
+                    if old_arr.shape != new_arr.shape:
                         if verbose:
-                            print("Could not convert anchros to numpy arrays for diffing. Skipping.")
+                            print(f"Warning: shape mismatch for anchros: old={old_arr.shape}, new={new_arr.shape}. Flattening and aligning to min length.")
+                        old_flat = old_arr.flatten()
+                        new_flat = new_arr.flatten()
+                        min_len = min(old_flat.size, new_flat.size)
+                        diff = new_flat[:min_len] - old_flat[:min_len]
                     else:
-                        # attempt to align shapes
-                        if old_arr.shape != new_arr.shape:
-                            if verbose:
-                                print(f"Warning: shape mismatch for anchros: old={old_arr.shape}, new={new_arr.shape}. Flattening and aligning to min length.")
-                            old_flat = old_arr.flatten()
-                            new_flat = new_arr.flatten()
-                            min_len = min(old_flat.size, new_flat.size)
-                            diff = new_flat[:min_len] - old_flat[:min_len]
-                        else:
-                            diff = new_arr - old_arr
+                        diff = new_arr - old_arr
 
-                        # Write nice human-friendly summaries into anchros/<domain>/
-                        outdir = os.path.join("anchros", domain)
-                        os.makedirs(outdir, exist_ok=True)
-                        summary = summarize_and_dump(diff, outdir, domain)
+                    # Write nice human-friendly summaries into anchros/<domain>/
+                    outdir = os.path.join("anchros", domain)
+                    os.makedirs(outdir, exist_ok=True)
+                    summary = summarize_and_dump(diff, outdir, domain)
 
-                        if verbose:
-                            print(f"Saved human-friendly anchor summaries to {outdir}")
-                            print(f"Mean diff: {summary.get('mean'):.6g}, Std diff: {summary.get('std'):.6g}")
 
             # --- Update anchors for next step ---
             anchros = new_anchros

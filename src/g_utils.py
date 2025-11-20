@@ -775,8 +775,10 @@ def evaluate3(
             fake_logits_list.append(fake_logits.cpu())
 
             loss = criterion(outputs, labels)
-
+            outputs = torch.softmax(outputs, dim=1)
             _, preds = torch.max(outputs, 1)
+            
+            
             acc = (preds == labels).float().mean().item()
 
             batch_size = labels.size(0)

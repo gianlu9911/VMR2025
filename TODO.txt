@@ -1,10 +1,21 @@
-- ripetere test per ogni modello fake facendo fine tuning (usa percentuale dataset) versione relative vs senza relative. voglio tempo di esecuzione e accuracy di tutto
-    usa lr diversi per sezioni diversi della ripetere, non fare un solo un layer, prova anche tutta la backbone. fai sulla g_linear.py
-    repeti usando anche sd1.4
-
-- ripeti g_liear.py con backbone di sd1.4
-
-- coreset selection metodo scegliere per quali esempi portare in memoria MIR aljuindi 
+plot delle logits - ok
+per la classe come evolve nel tempo
+tipo plotts come logits cambiano di gli step 
+6 figure. uno per ogni task e ci metto tutte le tipologie - logits così non devo fare pca o dimensionality reduction
 
 
-pensa: modo di usare relative representation
+per il paper, butta giù metodo ed esperimenti (immagini in pdf) 
+
+
+cambiare modello della backbone (in addestramento), ci metto il modello del primo ordine di task
+
+facciamo le tabelle con accuracy bwt e fwt e lo facciamo per tutti gli split (ordine temporale, metoso gan poi sdv, al contrario e rand) 
+poi mettiamo le matrici di confusion matrices come immagini solo x ordine temporale (cerco di metterle a fianco) cmap viridis o matshowm dimensione del font deve essere bella chiara
+
+
+poi plot di variazioni logits
+
+contenuto 
+tabelle 
+confusion matrix x caso ordine temporale
+plot dei logits sempre nel caso di ordine temporale
