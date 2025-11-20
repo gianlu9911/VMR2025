@@ -264,11 +264,7 @@ def fine_tune(
             feat_time = 0.0
             print("Loaded cached test features")
 
-        anchors_cpu = anchors.cpu()
-        real_mask_eval = (labels_test == 0)
-        fake_mask_eval = (labels_test == 1)
-        real_feats_eval = feats_test[real_mask_eval]
-        fake_feats_eval = feats_test[fake_mask_eval]
+
 
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)

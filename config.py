@@ -9,6 +9,7 @@ PRETRAINED_MODELS = {
     'sdv1.4'    : os.path.join(CHECKPOINT_DIR, 'res50_sdv1_4.pth.tar'),
     'sd1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
     'sdv1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
+    'stylegan_xl' : os.path.join(CHECKPOINT_DIR, 'resnet50_styleganxl.pth'),
 }
 # SG1 -> SG2 -> SDV1.4 -> SG3 -> SGXL -> SD2.1
 IMAGE_DIR = {

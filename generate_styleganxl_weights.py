@@ -2,12 +2,12 @@ from torchvision.models import resnet50
 import torch
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
-from bin_classifier import accuracy, RealSynthethicDataloader, nn, IMAGE_DIR, DataLoader
-
-
+from config import PRETRAINED_MODELS, IMAGE_DIR
+from bin_classifier import accuracy, RealSynthethicDataloader, nn, IMAGE_DIR, DataLoader, load_pretrained_model
+from src.g_dataloader import RealSynthethicDataloader
+from src.utils import evaluate
 ########### MAIN ###########
-def main(epochs=10):
+def generate_stylegnan_xl_weights(epochs=10):
     # Device
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print("Using device:", device)
@@ -78,4 +78,11 @@ def main(epochs=10):
     torch.save(model.state_dict(), "checkpoint/resnet50_styleganxl.pth")
     print("Modello salvato come checkpoint/resnet50_styleganxl.pth")
 
-main(1)
+
+def main():
+    model = load_pretrained_model('stylegan_xl')
+    dataloader = RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan_xl'])
+    loss, acc = evaluate(model, dataloader, batch_size=64, num_workers=8)
+    print(f"Pre-trained model evaluation - Loss: {loss:.4f}, Acc: {acc:.4f}")
+    return 0
+main()
