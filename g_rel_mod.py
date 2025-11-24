@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import numpy as np
 import torch
@@ -56,6 +56,8 @@ def fine_tune(
     only_on_real_for_contrast: bool = True,
     embedding_dim: int = 256,
     hidden_dim: int = 512,
+    save_feats_prefix = False,
+    save_feats = False,
 ):
     """
     Fine-tune with optional contrastive distillation and intra-class compactness loss.

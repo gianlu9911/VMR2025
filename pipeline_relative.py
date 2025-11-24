@@ -214,13 +214,13 @@ def run_sequential_finetunes(
 
 
 # Example usage (put under your __main__ guard or call from other code):
-def main():
+def main(order):
         # quick example: run short experiments for debugging
-        order = ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',]
+        order = order
         randminzed_order = np.random.permutation(order).tolist()
         print(f"Running sequential fine-tunes in order: {randminzed_order}")
         all_results = run_sequential_finetunes(
-            order=randminzed_order,
+            order=order,
             checkpoint_file="checkpoint/checkpoint_HELLO.pth",
             # any args forwarded to fine_tune:
             epochs=5,
@@ -228,7 +228,7 @@ def main():
             num_workers=8,
             seed=42,
             num_train_samples=None,
-            backbone='stylegan1',     # or whichever backbone you want
+            backbone=order[0],     # or whichever backbone you want
             plot_method='pca',
             force_recompute_features=False,
         )
