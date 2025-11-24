@@ -22,7 +22,7 @@ from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
-from g_rel import fine_tune
+from g_rel_mod import fine_tune
 # -----------------------
 
 
@@ -214,27 +214,37 @@ def run_sequential_finetunes(
 
 
 # Example usage (put under your __main__ guard or call from other code):
-if __name__ == "__main__":
-    # quick example: run short experiments for debugging
-    order = ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',]
-    randminzed_order = np.random.permutation(order).tolist()
-    print(f"Running sequential fine-tunes in order: {randminzed_order}")
-    all_results = run_sequential_finetunes(
-        order=randminzed_order,
-        checkpoint_file="checkpoint/checkpoint_HELLO.pth",
-        # any args forwarded to fine_tune:
-        epochs=5,
-        batch_size=512,
-        num_workers=8,
-        seed=42,
-        num_train_samples=None,
-        backbone='stylegan1',     # or whichever backbone you want
-        plot_method='pca',
-        force_recompute_features=False,
-    )
+def main():
+        # quick example: run short experiments for debugging
+        order = ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',]
+        randminzed_order = np.random.permutation(order).tolist()
+        print(f"Running sequential fine-tunes in order: {randminzed_order}")
+        all_results = run_sequential_finetunes(
+            order=randminzed_order,
+            checkpoint_file="checkpoint/checkpoint_HELLO.pth",
+            # any args forwarded to fine_tune:
+            epochs=5,
+            batch_size=512,
+            num_workers=8,
+            seed=42,
+            num_train_samples=None,
+            backbone='stylegan1',     # or whichever backbone you want
+            plot_method='pca',
+            force_recompute_features=False,
+        )
 
-    # print a compact summary
-    for domain, res in all_results.items():
-        print(f"=== Summary for {domain} ===")
-        for test_name, metrics in res.items():
-            print(f"  {test_name}: acc={metrics['acc']:.4f}, loss={metrics['loss']:.4f}")
+        # print a compact summary
+        for domain, res in all_results.items():
+            print(f"=== Summary for {domain} ===")
+            for test_name, metrics in res.items():
+                print(f"  {test_name}: acc={metrics['acc']:.4f}, loss={metrics['loss']:.4f}")
+
+orders = [
+    ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
+    ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',],
+    ['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
+    ['stylegan_xl', 'stylegan1','sdv2_1', 'sdv1_4','stylegan3','stylegan2']
+]
+
+for o in orders:
+    main(o)
