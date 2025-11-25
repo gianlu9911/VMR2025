@@ -795,8 +795,8 @@ def evaluate3(
 
     all_preds = torch.cat(all_preds).numpy()
     all_labels = torch.cat(all_labels).numpy()
-    np.save(os.path.join(save_dir, f"logits/real_step_{task_name}.npy"), torch.cat(real_logits_list).numpy())
-    np.save(os.path.join(save_dir, f"logits/fake_step_{task_name}_faketype_{fake_type}.npy"), torch.cat(fake_logits_list).numpy())
+    np.save(os.path.join(save_dir, f"logits/real_step_{task_name}.npy"), torch.cat(real_logits_list[:100]).numpy())
+    np.save(os.path.join(save_dir, f"logits/fake_step_{task_name}_faketype_{fake_type}.npy"), torch.cat(fake_logits_list[:100]).numpy())
     print(f"Logits saved to {save_dir}/logits/")
 
     # --- If rel_module is provided, collect statistics ---
@@ -804,8 +804,8 @@ def evaluate3(
         all_feats = torch.cat(all_feats)  # [N, num_anchors]
         real_rel_feats = all_feats[all_labels == 0]
         fake_rel_feats = all_feats[all_labels != 0]
-        np.save(os.path.join(save_dir, f"relative/real_step_{task_name}.npy"), real_rel_feats.numpy())
-        np.save(os.path.join(save_dir, f"relative/fake_step_{task_name}_faketype_{fake_type}.npy"), fake_rel_feats.numpy())
+        np.save(os.path.join(save_dir, f"relative/real_step_{task_name}.npy"), real_rel_feats[:100].numpy())
+        np.save(os.path.join(save_dir, f"relative/fake_step_{task_name}_faketype_{fake_type}.npy"), fake_rel_feats[:100].numpy())
         print(f"Relative features saved to {save_dir}/relative/")
         mean_sim = all_feats.mean(dim=1).numpy()
         std_sim  = all_feats.std(dim=1).numpy()
