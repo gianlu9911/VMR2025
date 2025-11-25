@@ -20,10 +20,11 @@ import pandas as pd
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, extract_and_save_features, evaluate, plot_features_with_anchors
+from src.utils import  BalancedBatchSampler, RelativeRepresentation, extract_and_save_features,  plot_features_with_anchors
 from src.utils import train_one_epoch_with_distill as train_one_epoch  # assuming same signature
 from src.utils import RelClassifierWithEmbedding
 from src.utils import intra_class_compactness_loss
+from src.utils import evaluate3
 from src.utils import NTXentLoss
 from src.utils import freeze_model
 

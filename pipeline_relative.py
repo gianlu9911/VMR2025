@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 import numpy as np
 import torch
@@ -22,7 +22,7 @@ from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
-from g_rel_mod import fine_tune
+from g_rel import fine_tune
 # -----------------------
 
 
@@ -162,6 +162,7 @@ def run_sequential_finetunes(
             'checkpoint_file': checkpoint_file,
             'save_feats_prefix': f'saved_numpy_features/step_{domain}',
             'save_feats': True,
+            'backbone': order[0],  # keep backbone constant
         })
         os.makedirs("anchros", exist_ok=True)
 
@@ -217,12 +218,11 @@ def run_sequential_finetunes(
 def main(order):
         # quick example: run short experiments for debugging
         order = order
-        randminzed_order = np.random.permutation(order).tolist()
-        print(f"Running sequential fine-tunes in order: {randminzed_order}")
+        print(f"Running sequential fine-tunes in order: {order}")
         all_results = run_sequential_finetunes(
             order=order,
             checkpoint_file="checkpoint/checkpoint_HELLO.pth",
-            # any args forwarded to fine_tune:
+            # any args forwarded to fine_tsune:
             epochs=5,
             batch_size=512,
             num_workers=8,
