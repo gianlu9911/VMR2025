@@ -4,7 +4,7 @@ import time
 import warnings
 warnings.filterwarnings("ignore")
 #os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
+import re
 import numpy as np
 import torch
 import torch.nn as nn
@@ -247,7 +247,7 @@ def fine_tune(
         "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
         "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
         "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-        "real_vs_styleganxl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+        "real_vs_stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
         "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),
     }
 
@@ -271,9 +271,14 @@ def fine_tune(
 
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+        fake_type = re.sub(r'^.*real_vs_', '', name)
 
         loss, acc = evaluate(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, test_name=name, save_dir="./logs")
+                             rel_module=rel_module, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
+                              fake_type=fake_type)
+
+        #loss, acc = evaluate(classifier, test_loader, criterion, device,
+                             #rel_module=rel_module, test_name=name, save_dir="./logs")
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     # Append evaluation results to CSV
