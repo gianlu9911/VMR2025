@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import numpy as np
 import torch
@@ -22,7 +22,7 @@ from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
-from g_rel import fine_tune
+from g_rel_mod import fine_tune
 # -----------------------
 
 
@@ -160,6 +160,7 @@ def run_sequential_finetunes(
             'fine_tuning_on': domain,
             'load_checkpoint': load_checkpoint,
             'checkpoint_file': checkpoint_file,
+            'force_recompute_features': False,
             'save_feats_prefix': f'saved_numpy_features/step_{domain}',
             'save_feats': True,
             'backbone': order[0],  # keep backbone constant
@@ -241,9 +242,9 @@ def main(order):
 
 orders = [
     ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
-    ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',],
-    ['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
-    ['stylegan_xl', 'stylegan1','sdv2_1', 'sdv1_4','stylegan3','stylegan2']
+    #['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',],
+    #['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
+    #['stylegan_xl', 'stylegan1','sdv2_1', 'sdv1_4','stylegan3','stylegan2']
 ]
 
 for o in orders:

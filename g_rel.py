@@ -213,7 +213,7 @@ def fine_tune(
         "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
         "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
         "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-        "real_vs_styleganxl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+        "real_vs_stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
         "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
     }
 
@@ -224,8 +224,14 @@ def fine_tune(
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                                 num_workers=num_workers)
-        feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
+        if force_recompute_features or not os.path.exists(feat_file_test):
+            feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
                                                                           feat_file_test, device, split='test_set')
+        else:
+            data = torch.load(feat_file_test)
+            feats_test, labels_test = data["features"], data["labels"]
+            feat_time = 0.0
+            print("Loaded cached test features")
 
 
         # Evaluate classifier on test features

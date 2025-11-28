@@ -24,7 +24,7 @@ from src.utils import  BalancedBatchSampler, RelativeRepresentation, extract_and
 from src.utils import train_one_epoch_with_distill as train_one_epoch  # assuming same signature
 from src.utils import RelClassifierWithEmbedding
 from src.utils import intra_class_compactness_loss
-from src.utils import evaluate3
+from src.g_utils import evaluate3 as evaluate
 from src.utils import NTXentLoss
 from src.utils import freeze_model
 
