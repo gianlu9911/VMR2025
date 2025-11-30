@@ -875,7 +875,7 @@ def evaluate3(
     avg_acc = val_acc / num_samples
     print(f"[{test_name}] - Loss: {avg_loss:.4f}, Acc: {avg_acc:.4f}")
 
-    return avg_loss, avg_acc
+    return avg_loss, avg_acc, all_preds, all_labels
 
 
 def evaluate(model, dataloader, criterion, device, rel_module=None, test_name="test_set", save_dir="./logs"):

@@ -22,9 +22,23 @@ from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch, plot_features_with_anchors
-from g_rel_mod import fine_tune
+from g_rel import fine_tune
 # -----------------------
 
+def build_cross_domain_matrix(results_all, metric="acc"):
+    # Estraggo tutti i nomi dei domini
+    domains = list(results_all.keys())
+
+    # Creo matrice vuota
+    matrix = pd.DataFrame(index=domains, columns=domains)
+
+    # Compilo riga per riga
+    for ft_domain, tests in results_all.items():
+        for test_domain, result in tests.items():
+            value = result.get(metric, None)
+            matrix.loc[ft_domain, test_domain] = value
+
+    return matrix.astype(float) 
 
 def run_sequential_finetunes(
     order=None,
@@ -164,6 +178,7 @@ def run_sequential_finetunes(
             'save_feats_prefix': f'saved_numpy_features/step_{domain}',
             'save_feats': True,
             'backbone': order[0],  # keep backbone constant
+            'order': order,
         })
         os.makedirs("anchros", exist_ok=True)
 
@@ -210,6 +225,24 @@ def run_sequential_finetunes(
         # from now on, load the checkpoint saved by the previous run
         load_checkpoint = True
 
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    matrix_acc = build_cross_domain_matrix(results_all, metric="acc")
+
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(matrix_acc, annot=True, fmt=".3f", cmap="viridis")
+    plt.title("Cross-domain Performance (ACC)")
+    plt.xlabel("Test Domain")
+    plt.ylabel("Fine-tune Domain")
+    plt.tight_layout()
+
+    # Salva come PDF
+    plt.savefig(f"cross_domain_acc_{order}.pdf")
+    plt.close()
+
+
+
     if verbose:
         print("All sequential fine-tunes completed.")
     return results_all
@@ -242,9 +275,9 @@ def main(order):
 
 orders = [
     ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
-    #['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',],
-    #['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
-    #['stylegan_xl', 'stylegan1','sdv2_1', 'sdv1_4','stylegan3','stylegan2']
+    ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',],
+    ['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
+    ['stylegan_xl', 'stylegan1','sdv2_1', 'sdv1_4','stylegan3','stylegan2']
 ]
 
 for o in orders:

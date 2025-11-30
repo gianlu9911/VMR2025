@@ -51,6 +51,7 @@ def fine_tune(
     # NEW: feature-saving during evaluation
     save_feats: bool = False,
     save_feats_prefix: str = None,
+    order: str = '[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
 ):
 
     """Fine-tune relative-representation classifier.
@@ -208,14 +209,20 @@ def fine_tune(
     print(f"Model saved to {checkpoint_path}")
 
     # Prepare test datasets
-    dataloaders_test = {
-        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
-        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-        "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
-        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-        "real_vs_stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
-    }
+    #dataloaders_test = {
+    #    "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
+    #    "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
+    #    "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
+    #    "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+    #    "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+    #    "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
+    #}
+
+    dataloaders_test = {}
+    for o in order:
+        dataloaders_test[o] = RealSynthethicDataloader(real_dir, IMAGE_DIR[o], split='test_set')
+
+
 
     test_results = {}
     for name, dataset in dataloaders_test.items():
@@ -237,12 +244,12 @@ def fine_tune(
         # Evaluate classifier on test features
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-        fake_type = re.sub(r'^.*real_vs_', '', name)
+        fake_type = name
         print(f"Evaluating on {name} with fake type {fake_type}...")
-        loss, acc = evaluate3(classifier, test_loader, criterion, device,
+        loss, acc, preds, labels = evaluate3(classifier, test_loader, criterion, device,
                              rel_module=rel_module, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
                               fake_type=fake_type)
-        test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
+        test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time, "preds": preds, "labels": labels}
 
     # --- Append evaluation results to CSV ---
     # CSV columns/order requested by user:
@@ -253,7 +260,7 @@ def fine_tune(
         'real_vs_sdv1_4',
         'real_vs_stylegan3',
         'real_vs_styleganxl',
-        'real_vs_sdv2_1'  # Uncomment if sdv2_1 is available
+        'real_vs_sdv2_1' 
     ]
 
     # Default path if not provided
@@ -317,6 +324,8 @@ if __name__ == "__main__":
     parser.add_argument('--save_feats_prefix', type=str, default='saved_numpy_features/step_prova',
                         help="Optional prefix (path+name) to use for saved feature .npy files. "
                              "If not provided, defaults to <feature_dir>/<test_name>_eval_feats")
+    parser.add_argument('--order', default='[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
+                        help="Order of model steps for saving features.")
 
     args = parser.parse_args()
 
