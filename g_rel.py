@@ -254,7 +254,7 @@ def fine_tune(
     # --- Append evaluation results to CSV ---
     # CSV columns/order requested by user:
     csv_columns = []
-    csv_columns[0]= 'fine_tuning_on'
+    csv_columns.append("fine_tuning_on")
     for o in order:
         csv_columns.append(o)
 

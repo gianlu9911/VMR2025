@@ -179,6 +179,7 @@ def run_sequential_finetunes(
             'save_feats': True,
             'backbone': order[0],  # keep backbone constant
             'order': order,
+            'num_anchors': 10000,
         })
         os.makedirs("anchros", exist_ok=True)
 

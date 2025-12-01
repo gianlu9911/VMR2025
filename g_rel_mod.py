@@ -86,7 +86,7 @@ def fine_tune(
             device = torch.device('cpu')
     print(f"Using device: {device}")
 
-    feature_dir = f"./feature_{backbone}_mod"
+    feature_dir = f"./feature_{backbone}"
     checkpoint_dir = "./checkpoint_mod"
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
@@ -279,7 +279,7 @@ def fine_tune(
 
     # Append evaluation results to CSV
     csv_columns = []
-    csv_columns[0]= 'fine_tuning_on'
+    csv_columns.append("fine_tuning_on")
     for o in order:
         csv_columns.append(o)
 
