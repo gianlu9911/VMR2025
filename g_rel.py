@@ -253,15 +253,10 @@ def fine_tune(
 
     # --- Append evaluation results to CSV ---
     # CSV columns/order requested by user:
-    csv_columns = [
-        'fine_tuning_on',
-        'real_vs_stylegan1',
-        'real_vs_stylegan2',
-        'real_vs_sdv1_4',
-        'real_vs_stylegan3',
-        'real_vs_styleganxl',
-        'real_vs_sdv2_1' 
-    ]
+    csv_columns = []
+    csv_columns[0]= 'fine_tuning_on'
+    for o in order:
+        csv_columns.append(o)
 
     # Default path if not provided
     if eval_csv_path is None:

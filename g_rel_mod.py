@@ -59,6 +59,7 @@ def fine_tune(
     hidden_dim: int = 512,
     save_feats_prefix = False,
     save_feats = False,
+    order = None
 ):
     """
     Fine-tune with optional contrastive distillation and intra-class compactness loss.
@@ -242,14 +243,9 @@ def fine_tune(
     print(f"Model saved to {checkpoint_path}")
 
     # Prepare test datasets (same as before)
-    dataloaders_test = {
-        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
-        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-        "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
-        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-        "real_vs_stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),
-    }
+    dataloaders_test = {}
+    for o in order:
+        dataloaders_test[o] = RealSynthethicDataloader(real_dir, IMAGE_DIR[o], split='test_set')
 
     test_results = {}
     for name, dataset in dataloaders_test.items():
@@ -282,17 +278,10 @@ def fine_tune(
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     # Append evaluation results to CSV
-    csv_columns = [
-        'fine_tuning_on',
-        'real_vs_stylegan1',
-        'real_vs_stylegan2',
-        'real_vs_sdv1_4',
-        'real_vs_stylegan3',
-        'real_vs_styleganxl',
-        'real_vs_sdv2_1',
-        'lambda_contrast',
-        'lambda_compact'
-    ]
+    csv_columns = []
+    csv_columns[0]= 'fine_tuning_on'
+    for o in order:
+        csv_columns.append(o)
 
     if eval_csv_path is None:
         eval_csv_path = os.path.join('logs_mod', 'test_accuracies.csv')
@@ -337,6 +326,7 @@ if __name__ == "__main__":
     parser.add_argument('--use_distillation', action='store_true',
                         help="If set, tries to load checkpoint and use as frozen teacher for contrastive distillation.")
     parser.add_argument('--eval_csv_path', type=str, default='logs_mod/lambda_search_results.csv')
+    parser.add_argument('--order', type=str, default=['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl', 'sdv2_1'])
     args = parser.parse_args()
 
     # grid di esempio (modifica come preferisci)

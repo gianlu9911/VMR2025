@@ -795,7 +795,8 @@ def evaluate3(
 
     all_preds = torch.cat(all_preds).numpy()
     all_labels = torch.cat(all_labels).numpy()
-    np.save(os.path.join(save_dir, f"logits/real_step_{task_name}.npy"), torch.cat(real_logits_list[:100]).numpy())
+    np.save(os.path.join(save_dir, f"logits/real_step_{task_name}.npy"), torch.cat(real_logits_list[:200]).numpy())
+    
     np.save(os.path.join(save_dir, f"logits/fake_step_{task_name}_faketype_{fake_type}.npy"), torch.cat(fake_logits_list[:100]).numpy())
     print(f"Logits saved to {save_dir}/logits/")
 
