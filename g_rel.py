@@ -23,7 +23,8 @@ import re
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch
+from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate
+from src.g_utils import train_one_epoch2 as train_one_epoch
 from src.g_utils import evaluate3, save_features_only
 
 # ---------------------------------------------
@@ -197,7 +198,7 @@ def fine_tune(
     # Training loop
     start_time = time.time()
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(classifier, feat_loader, criterion, optimizer, device)
+        train_loss, train_acc = train_one_epoch(classifier, feat_loader, criterion, optimizer, device, save_dir="./logs/train", task_name=fine_tuning_on)
         print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
     train_time = time.time() - start_time
     print(f"Training completed in {train_time/60:.2f} minutes")
@@ -209,18 +210,16 @@ def fine_tune(
     print(f"Model saved to {checkpoint_path}")
 
     # Prepare test datasets
-    #dataloaders_test = {
-    #    "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
-    #    "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-    #    "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
-    #    "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-    #    "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-    #    "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
-    #}
+    dataloaders_test = {
+        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
+        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
+        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
+        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
+    }
 
-    dataloaders_test = {}
-    for o in order:
-        dataloaders_test[o] = RealSynthethicDataloader(real_dir, IMAGE_DIR[o], split='test_set')
+
 
 
 

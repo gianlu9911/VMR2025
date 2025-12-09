@@ -269,8 +269,8 @@ def fine_tune(
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         fake_type = re.sub(r'^.*real_vs_', '', name)
 
-        loss, acc = evaluate(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
+        loss, acc, preds, labels = evaluate(classifier, test_loader, criterion, device,
+                             rel_module=rel_module, test_name=name, save_dir="./logs_mod", task_name=fine_tuning_on,
                               fake_type=fake_type)
 
         #loss, acc = evaluate(classifier, test_loader, criterion, device,
@@ -282,6 +282,8 @@ def fine_tune(
     csv_columns.append("fine_tuning_on")
     for o in order:
         csv_columns.append(o)
+    csv_columns.append("lambda_contrast")
+    csv_columns.append("lambda_compact")
 
     if eval_csv_path is None:
         eval_csv_path = os.path.join('logs_mod', 'test_accuracies.csv')
@@ -290,7 +292,7 @@ def fine_tune(
     file_new = not os.path.exists(eval_csv_path) or os.path.getsize(eval_csv_path) == 0
     with open(eval_csv_path, 'a') as f:
         if file_new:
-            f.write(','.join(csv_columns) + '\n')
+            f.write('&'.join(csv_columns) + '\n')
         row = [fine_tuning_on]
         for col in csv_columns[1:-2]:
             if col in test_results:

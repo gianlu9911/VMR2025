@@ -14,8 +14,8 @@ def load_feats(path):
 def mse(A, B):
     # match dimensionality
     d = min(A.shape[1], B.shape[1])
-    A = A[:, :d]
-    B = B[:, :d]
+    #A = A[:, :d]
+    #B = B[:, :d]
     return ((A - B) ** 2).mean()
 
 # ------------------------------
@@ -42,7 +42,7 @@ for step in previous_steps:
 # ------------------------------
 #   FAKE FEATURES
 # ------------------------------
-fake_subtypes = ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl']
+fake_subtypes = ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl', 'sdv2_1']
 fake_curves = {ft: [] for ft in fake_subtypes}
 
 print("\n=== FAKE FEATURES ===")

@@ -4,7 +4,7 @@ import time
 import warnings
 warnings.filterwarnings("ignore")
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
+from logger import *
 import numpy as np
 import torch
 import torch.nn as nn
@@ -48,6 +48,7 @@ def run_sequential_finetunes(
     topk_show: int = 50,             # how many largest diffs to list in the top-k CSV
     dump_full_threshold: int = 100000, # above this number of elements we don't dump full diffs
     float_fmt: str = "{:.6g}",      # formatting for sample outputs (human-readable)
+    n_anchros=10000,
     **fine_tune_kwargs
 ):
     """
@@ -179,7 +180,7 @@ def run_sequential_finetunes(
             'save_feats': True,
             'backbone': order[0],  # keep backbone constant
             'order': order,
-            'num_anchors': 10000,
+            'num_anchors': n_anchros,
         })
         os.makedirs("anchros", exist_ok=True)
 
@@ -229,57 +230,127 @@ def run_sequential_finetunes(
     import matplotlib.pyplot as plt
     import seaborn as sns
 
-    matrix_acc = build_cross_domain_matrix(results_all, metric="acc")
+    os.makedirs("figures", exist_ok=True)
 
+    matrix_acc = build_cross_domain_matrix(results_all, metric="acc")
+    matrix_acc.to_csv(f"figures/cross_domain_acc_{order}.csv")
+    a,b,f = logging(f"figures/cross_domain_acc_{order}.csv")
     plt.figure(figsize=(10, 8))
     sns.heatmap(matrix_acc, annot=True, fmt=".3f", cmap="viridis")
-    plt.title("Cross-domain Performance (ACC)")
+    plt.title(F"ACC:_{a:.4f}_BWT:{b:.4f}_FWT:{f:.4f}")
     plt.xlabel("Test Domain")
     plt.ylabel("Fine-tune Domain")
     plt.tight_layout()
-
     # Salva come PDF
-    plt.savefig(f"cross_domain_acc_{order}.pdf")
+    plt.savefig(f"figures/cross_domain_acc_{order}_anchros_{n_anchros}.pdf")
     plt.close()
 
 
 
     if verbose:
         print("All sequential fine-tunes completed.")
-    return results_all
+    return results_all, a,b,f
+
+import os
+from datetime import datetime
+import matplotlib.pyplot as plt
+import os
+from datetime import datetime
+import numpy as np
+import matplotlib.pyplot as plt
+
+def plot_anchor_curves(results_plot, save_path="plots"):
+    os.makedirs(save_path, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"contnual_values_curves_{timestamp}.png"
+    fullpath = os.path.join(save_path, filename)
+
+    fig, axs = plt.subplots(1, 3, figsize=(18, 5))
+
+    metrics = ["ACC", "BWT", "FWT"]
+    colors = ["tab:blue", "tab:orange", "tab:green", "tab:red"]
+
+    legend_names = [
+        "ordine temporale",
+        "sdv first",
+        "gan first",
+        "random"
+    ]
+
+    for metric_idx, metric in enumerate(metrics):
+        ax = axs[metric_idx]
+
+        for seq_idx, seq_data in results_plot.items():
+
+            # prendi gli x e y reali
+            x = np.array(seq_data["n_anchors"], dtype=float)
+            y = np.array(seq_data[metric], dtype=float)
+
+            # ordina per ascissa → elimina la chiusura del grafico
+            order = np.argsort(x)
+            x_sorted = x[order]
+            y_sorted = y[order]
+
+            # plot
+            ax.plot(
+                x_sorted,
+                y_sorted,
+                marker='o',
+                label=legend_names[seq_idx],
+                color=colors[seq_idx]
+            )
+
+        ax.set_title(f"{metric.upper()} vs n_anchors")
+        ax.set_xlabel("Numero di Anchors")
+        ax.set_ylabel(metric.upper())
+        ax.grid(True)
+        ax.legend()
+
+    plt.tight_layout()
+    plt.savefig(fullpath, dpi=300)
+    plt.show()
+
+    print(f"Plot salvato in: {fullpath}")
 
 
-# Example usage (put under your __main__ guard or call from other code):
-def main(order):
-        # quick example: run short experiments for debugging
-        order = order
-        print(f"Running sequential fine-tunes in order: {order}")
-        all_results = run_sequential_finetunes(
-            order=order,
-            checkpoint_file="checkpoint/checkpoint_HELLO.pth",
-            # any args forwarded to fine_tsune:
-            epochs=5,
-            batch_size=512,
-            num_workers=8,
-            seed=42,
-            num_train_samples=None,
-            backbone=order[0],     # or whichever backbone you want
-            plot_method='pca',
-            force_recompute_features=False,
-        )
-
-        # print a compact summary
-        for domain, res in all_results.items():
-            print(f"=== Summary for {domain} ===")
-            for test_name, metrics in res.items():
-                print(f"  {test_name}: acc={metrics['acc']:.4f}, loss={metrics['loss']:.4f}")
+import matplotlib.pyplot as plt
 
 orders = [
     ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
-    ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl',],
+    ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl'],
     ['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
     ['stylegan_xl', 'stylegan1','sdv2_1', 'sdv1_4','stylegan3','stylegan2']
 ]
 
-for o in orders:
-    main(o)
+nas = [1000, 5000, 10000, 20000, 50000]
+
+# Qui salviamo tutto
+results_plot = {i: {"n_anchors": [], "ACC": [], "BWT": [], "FWT": []} 
+                for i in range(len(orders))}
+
+def main(order, n_anchors=10000):
+    all_results, a, b, f = run_sequential_finetunes(
+        order=order,
+        checkpoint_file="checkpoint/checkpoint_HELLO.pth",
+        epochs=5,
+        batch_size=512,
+        num_workers=8,
+        seed=42,
+        num_train_samples=None,
+        backbone=order[0],
+        plot_method='pca',
+        force_recompute_features=False,
+        n_anchros=n_anchors,
+    )
+    return a, b, f
+
+for idx, o in enumerate(orders):
+    for na in nas:
+        a, b, f = main(o, na)
+
+        results_plot[idx]["n_anchors"].append(na if na is not None else 0) # usa 0 per None
+        results_plot[idx]["ACC"].append(a)
+        results_plot[idx]["BWT"].append(b)
+        results_plot[idx]["FWT"].append(f)
+plot_anchor_curves(results_plot, "figures")

@@ -5,7 +5,7 @@ import torch.nn.functional as F
 import os
 import os.path as osp
 
-root_folder = "logs/relative"
+root_folder = "logs/logits"
 a = np.load(osp.join(root_folder, "real_step_sdv1_4.npy"))
 b = np.load(osp.join(root_folder, "real_step_stylegan1.npy"))
 
@@ -13,7 +13,7 @@ b = np.load(osp.join(root_folder, "real_step_stylegan1.npy"))
 print("Are the features equal?", np.array_equal(a, b))
 # print distance between the features
 print("Distance between real logits:", np.linalg.norm(a - b))
-
+print("shape a:", a.shape)
 
 c = np.load("logs/relative/fake_step_stylegan1_faketype_stylegan1.npy")
 d = np.load("logs/relative/fake_step_sdv1_4_faketype_stylegan1.npy")
