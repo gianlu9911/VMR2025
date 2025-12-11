@@ -296,8 +296,11 @@ class RelativeRepresentation(nn.Module):
         self.register_buffer("anchors", anchors)
 
     def forward(self, x):
+        print("[RelativeRepresentation] Input x shape:", x.shape)
         x = F.normalize(x, p=2, dim=1, eps=1e-8)
-        return torch.matmul(x, self.anchors.T)
+        out = torch.matmul(x, self.anchors.T)
+        print("[RelativeRepresentation] Output shape:", out.shape)
+        return out
 
 
 class RelClassifier(nn.Module):
@@ -309,7 +312,9 @@ class RelClassifier(nn.Module):
         nn.init.zeros_(self.classifier.bias)
 
     def forward(self, x):
+        print("[Classifier] Input x shape:", x.shape)
         rel_x = self.rel_module(x)  # raw feats -> relative feats
+        print("[Classifier] Relative representation shape:", rel_x.shape)
         return self.classifier(rel_x)
 
 # ---------------------------------------------
@@ -333,8 +338,49 @@ def extract_and_save_features(backbone, dataloader, feature_path, device, split=
     total_time = time.time() - start_time
 
     torch.save({"features": feats, "labels": labels}, feature_path)
+
+
     print(f"Features saved to {feature_path} (time: {total_time/60:.2f} min)")
     return feats, labels, total_time
+
+def extract_and_save_features2(backbone, dataloader, feature_path, device, split='train_set'):
+    feats, labels = [], []
+    print(f"Saving features to {feature_path}...")
+
+    start_time = time.time()
+    backbone.eval()
+
+    printed_shapes = False   # <--- stampa solo una volta
+
+    with torch.no_grad():
+        for imgs, lbls in tqdm(dataloader, desc=f"Extracting {os.path.basename(feature_path)}"):
+            imgs = imgs.to(device)
+
+            # ---- SHAPE PRINT ----
+            if not printed_shapes:
+                print("\n[DEBUG SHAPES]")
+                print("Backbone INPUT  :", imgs.shape)
+
+            out = backbone(imgs)  # assuming backbone returns feature vector
+
+            if not printed_shapes:
+                print("Backbone OUTPUT :", out.shape)
+                print("-------------------------\n")
+                printed_shapes = True
+            # -----------------------
+
+            feats.append(out.cpu())
+            labels.append(lbls)
+
+    feats = torch.cat(feats, dim=0)
+    labels = torch.cat(labels, dim=0)
+    total_time = time.time() - start_time
+
+    torch.save({"features": feats, "labels": labels}, feature_path)
+
+    print(f"Features saved to {feature_path} (time: {total_time/60:.2f} min)")
+    return feats, labels, total_time
+
 
 # ---------------------------------------------
 # Plotting utility: anchors + real + fake features
@@ -845,7 +891,6 @@ def evaluate3(
     dataloader,
     criterion,
     device,
-    rel_module=None,
     test_name="test_set",
     save_dir="./logs",
     task_name=None,

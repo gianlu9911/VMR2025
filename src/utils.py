@@ -296,8 +296,11 @@ class RelativeRepresentation(nn.Module):
         self.register_buffer("anchors", anchors)
 
     def forward(self, x):
+        print("[RelativeRepresentation] Input x shape:", x.shape)
         x = F.normalize(x, p=2, dim=1, eps=1e-8)
-        return torch.matmul(x, self.anchors.T)
+        out = torch.matmul(x, self.anchors.T)
+        print("[RelativeRepresentation] Output shape:", out.shape)
+        return out
 
 
 class RelClassifier(nn.Module):
@@ -309,8 +312,11 @@ class RelClassifier(nn.Module):
         nn.init.zeros_(self.classifier.bias)
 
     def forward(self, x):
+        print("[Classifier] Input x shape:", x.shape)
         rel_x = self.rel_module(x)  # raw feats -> relative feats
-        return self.classifier(rel_x)
+        out = self.classifier(rel_x)
+        print("[Classifier] Output logits shape:", out.shape)
+        return out
 
 # ---------------------------------------------
 # Feature extraction helper
@@ -335,6 +341,45 @@ def extract_and_save_features(backbone, dataloader, feature_path, device, split=
     torch.save({"features": feats, "labels": labels}, feature_path)
     print(f"Features saved to {feature_path} (time: {total_time/60:.2f} min)")
     return feats, labels, total_time
+
+def extract_and_save_features_verbose(backbone, dataloader, feature_path, device, split='train_set'):
+    feats, labels = [], []
+    print(f"Saving features to {feature_path}...")
+
+    start_time = time.time()
+    backbone.eval()
+    
+    first_batch = True  # per stampare informazioni solo una volta
+    
+    with torch.no_grad():
+        for imgs, lbls in tqdm(dataloader, desc=f"Extracting {os.path.basename(feature_path)}"):
+            
+            # Shape degli input
+            if first_batch:
+                print("\n[INFO] Input batch shape:", imgs.shape)  # (B, C, H, W)
+            
+            imgs = imgs.to(device)
+            out = backbone(imgs)  # assuming backbone returns feature vector
+            
+            # Shape dell’output del backbone
+            if first_batch:
+                print("[INFO] Output batch shape (features):", out.shape)  # (B, F)
+                first_batch = False
+            
+            feats.append(out.cpu())
+            labels.append(lbls)
+
+    # Tensor finali
+    feats = torch.cat(feats, dim=0)
+    labels = torch.cat(labels, dim=0)
+
+    print("\n[INFO] Final feature tensor shape:", feats.shape)   # (N_samples, F)
+    print("[INFO] Final labels tensor shape:", labels.shape)    # (N_samples,)
+
+    total_time = time.time() - start_time
+
+    torch.save({"features": feats, "labels": labels}, feature_path)
+    print(f"\nFeatures saved to {feature_path} (time: {total_time/60:.2f} min)")
 
 # ---------------------------------------------
 # Plotting utility: anchors + real + fake features

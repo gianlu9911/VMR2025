@@ -82,7 +82,7 @@ class RealSyntheticDataloaderMC(Dataset):
     
 class RealSynthethicDataloader(Dataset):
     def __init__(self, real_dir=None, fake_dir1=None, fake_dir2=None, 
-                 split='train_set', balance_fake_to_real=False, seed=42):
+                 split='train_set', balance_fake_to_real=False, seed=42, num_training_samples=None):
 
         random.seed(seed)
         self.images = []
@@ -96,6 +96,10 @@ class RealSynthethicDataloader(Dataset):
             self.source_counts['real'] = len(rgb_real)
             self.images += rgb_real
             self.labels.update({img: 0 for img in rgb_real})  # Real = 0
+            if num_training_samples is not None:
+                self.images = self.images[:num_training_samples]
+                self.labels = {img: self.labels[img] for img in self.images}
+                self.source_counts['real'] = min(self.source_counts['real'], num_training_samples)
         else:
             self.source_counts['real'] = 0
         print(f"Number of real images: {self.source_counts['real']}")
@@ -106,7 +110,10 @@ class RealSynthethicDataloader(Dataset):
             fake1 += sorted(glob(os.path.join(fake_dir1, split, '*.png')))
             fake1 += sorted(glob(os.path.join(fake_dir1, split, '*.jpg')))
             fake1 = list(set(fake1))  # Deduplicate
+            if num_training_samples is not None:
+                fake1 = fake1[:num_training_samples]
         self.source_counts['fake1'] = len(fake1)
+
         print(f"Number of fake1 images: {self.source_counts['fake1']}")
 
         # Fake 2
@@ -115,6 +122,8 @@ class RealSynthethicDataloader(Dataset):
             fake2 += sorted(glob(os.path.join(fake_dir2, split, '*.png')))
             fake2 += sorted(glob(os.path.join(fake_dir2, split, '*.jpg')))
             fake2 = list(set(fake2))
+            if num_training_samples is not None:
+                fake2 = fake2[:num_training_samples]
         self.source_counts['fake2'] = len(fake2)
         print(f"Number of fake2 images: {self.source_counts['fake2']}")
 
