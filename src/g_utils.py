@@ -296,10 +296,10 @@ class RelativeRepresentation(nn.Module):
         self.register_buffer("anchors", anchors)
 
     def forward(self, x):
-        print("[RelativeRepresentation] Input x shape:", x.shape)
+        #print("[RelativeRepresentation] Input x shape:", x.shape)
         x = F.normalize(x, p=2, dim=1, eps=1e-8)
         out = torch.matmul(x, self.anchors.T)
-        print("[RelativeRepresentation] Output shape:", out.shape)
+        #print("[RelativeRepresentation] Output shape:", out.shape)
         return out
 
 
@@ -312,9 +312,9 @@ class RelClassifier(nn.Module):
         nn.init.zeros_(self.classifier.bias)
 
     def forward(self, x):
-        print("[Classifier] Input x shape:", x.shape)
+        #print("[Classifier] Input x shape:", x.shape)
         rel_x = self.rel_module(x)  # raw feats -> relative feats
-        print("[Classifier] Relative representation shape:", rel_x.shape)
+        #print("[Classifier] Relative representation shape:", rel_x.shape)
         return self.classifier(rel_x)
 
 # ---------------------------------------------
@@ -909,13 +909,13 @@ def evaluate3(
             features, labels = features.to(device), labels.to(device)
 
             outputs = model(features)
-            print(f"outputs shape: {outputs.shape}")
-            print(f"Outputs shape: {outputs.shape}")
+            #print(f"outputs shape: {outputs.shape}")
+            #print(f"Outputs shape: {outputs.shape}")
             loss = criterion(outputs, labels)
 
             probs = torch.softmax(outputs, dim=1)
             _, preds = torch.max(probs, 1)
-            print(f"Preds shape: {preds.shape}")
+            #print(f"Preds shape: {preds.shape}")
 
             # update stats
             batch_size = labels.size(0)
@@ -944,7 +944,7 @@ def evaluate3(
 
     # ---- concatenate predictions ----
     all_preds = torch.cat(all_preds).numpy()
-    print(f"All preds shape: {all_preds.shape}")
+    #print(f"All preds shape: {all_preds.shape}")
     all_labels = torch.cat(all_labels).numpy()
 
     # ---- REAL logits ----

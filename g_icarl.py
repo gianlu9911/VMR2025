@@ -1,99 +1,169 @@
-#!/usr/bin/env python3
+import copy
 import os
-import time
-import warnings
-
-
-warnings.filterwarnings("ignore")
 os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
-import numpy as np
+from torch.utils.data import ConcatDataset
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
-from torch.utils.data import ConcatDataset, TensorDataset
-
-# === Project imports - adjust these to your repo layout ===
+from torch.utils.data import DataLoader
+from tqdm import tqdm
+import argparse
+import time
 from config import PRETRAINED_MODELS, IMAGE_DIR
-from src.g_dataloader import RealSynthethicDataloader
+from src.dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
+import numpy as np
 
-def evaluate3(model, dataloader, device, test_name="test", save_dir=None, task_name="task", fake_type="fake"):
+def update_exemplar_set_icarl(model, dataset, old_exemplars, device, how_many=100, batch_size=64):
     model.eval()
-    running_acc, num_samples = 0.0, 0.0
+    exemplars = [] if old_exemplars is None else old_exemplars.copy()
+
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=8)
     with torch.no_grad():
-        for i, batch in enumerate(dataloader):
-            imgs, labels = batch
-            imgs, labels = imgs.to(device), labels.to(device)
-            outputs = model(imgs)
+        features_list = []
+        labels_list = []
+        for images, labels in dataloader:
+            images = images.to(device)
+            feats = model(images)  # use your model’s penultimate layer
+            features_list.append(feats.cpu())
+            labels_list.append(labels)
+        features = torch.cat(features_list)
+        labels = torch.cat(labels_list)
+
+        # select herding exemplars for each class
+        for cls in labels.unique():
+            cls_idx = (labels == cls).nonzero(as_tuple=True)[0]
+            cls_features = features[cls_idx]
+            # simplest: randomly pick how_many features
+            selected_idx = cls_idx[torch.randperm(len(cls_idx))[:how_many]]
+            exemplars.extend([(dataset[i][0], labels[i].item()) for i in selected_idx])
+
+    return exemplars
+
+import torch.nn.functional as F
+from tqdm import tqdm
+
+
+import torch
+
+def evaluate_nme(model, exemplar_set, dataloader, device):
+    """
+    Evaluate using Nearest-Mean-of-Exemplars classifier.
+    model: feature extractor part of the model
+    exemplar_set: list of tuples (image_tensor, label)
+    dataloader: test set
+    """
+    model.eval()
+    
+    # Compute class mean features
+    class_means = {}
+    for cls in set(l for _, l in exemplar_set):
+        feats = []
+        for img, label in exemplar_set:
+            if label == cls:
+                with torch.no_grad():
+                    feat = model.feature_extractor(img.unsqueeze(0).to(device)).cpu()
+                    feats.append(feat.squeeze(0))
+        feats = torch.stack(feats)
+        class_means[cls] = feats.mean(0)
+    
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for images, labels in dataloader:
+            images, labels = images.to(device), labels.to(device)
+            feats = model.feature_extractor(images).cpu()
+            for i, feat in enumerate(feats):
+                # Compute L2 distance to each class mean
+                dists = {cls: torch.norm(feat - mu) for cls, mu in class_means.items()}
+                pred_class = min(dists, key=dists.get)
+                if pred_class == labels[i].item():
+                    correct += 1
+                total += 1
+    return correct / total
+
+def evaluate(model, dataloader, device):
+    model.eval()
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for images, labels in dataloader:
+            print(images.shape)
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, preds = torch.max(outputs, 1)
+            total += labels.size(0)
+            correct += (preds == labels).sum().item()
+
+    return correct / total
+
+def train_one_epoch_icarl_binary(
+    model,
+    old_model,
+    dataloader,
+    optimizer,
+    device,
+    num_old_classes,
+    lambda_distill=1.0
+):
+    model.train()
+    running_loss = 0.0
+    running_acc = 0.0
+    num_samples = 0
+    if old_model is not None:
+        old_model.eval()
+        for p in old_model.parameters():
+            p.requires_grad = False
+
+    with tqdm(total=len(dataloader), unit=' batch', desc='Training: ') as bar:
+        for i, (images, labels) in enumerate(dataloader):
+            images, labels = images.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(images)
+
+            # iCaRL losses
+            if old_model is not None:
+                with torch.no_grad():
+                    old_probs = torch.sigmoid(old_model(images))
+
+                distill_loss = F.binary_cross_entropy_with_logits(
+                    outputs[:, :num_old_classes],
+                    old_probs[:, :num_old_classes]
+                ) if num_old_classes > 0 else 0.0
+
+                is_new = labels >= num_old_classes
+                ce_loss = F.cross_entropy(
+                    outputs[is_new, num_old_classes:],
+                    labels[is_new] - num_old_classes
+                ) if is_new.any() else 0.0
+            else:
+                distill_loss = 0.0
+                ce_loss = F.cross_entropy(outputs, labels)
+
+            loss = ce_loss + lambda_distill * distill_loss
+            loss.backward()
+            optimizer.step()
+
+            # Compute batch accuracy
             _, preds = torch.max(outputs, 1)
             acc = (preds == labels).float().mean().item()
-            running_acc += acc * labels.size(0)
-            num_samples += labels.size(0)
-    epoch_acc = running_acc / num_samples
-    print(f"{test_name} acc: {epoch_acc:.4f}")
-    if save_dir is not None:
-        save_path = os.path.join(save_dir, f"{test_name}_{fake_type}_{task_name}.npy")
-    return epoch_acc, preds.cpu().numpy(), labels.cpu().numpy() 
 
+            batch_size = labels.size(0)
+            running_loss += loss.item() * batch_size
+            running_acc += acc * batch_size
+            num_samples += batch_size
 
-def train_one_epoch_icarl(model, teacher, dataloader, criterion, optimizer, device, batch_size=32,
-                          lambda_new=1.0, lambda_dist=1.0, 
-                          save_dir=None, task_name="task"):
+            if i % 10 == 0:
+                bar.set_postfix({
+                    'loss': round(running_loss / num_samples, 4),
+                    'acc': round(running_acc / num_samples, 4)
+                })
+            bar.update(1)
 
-    model.train()
-    running_loss, running_acc, num_samples = 0.0, 0.0, 0
+    return running_loss / num_samples, running_acc / num_samples
 
-
-
-
-    # --- training loop ---
-    for imgs, labels in dataloader:
-
-        imgs, labels = imgs.to(device), labels.to(device)
-        optimizer.zero_grad()
-
-        # forward
-        outputs = model(imgs)
-
-        # new task loss
-        loss_new = criterion(outputs, labels)
-
-        # distillation loss
-        if teacher is not None:
-            with torch.no_grad():
-                feats_teacher = teacher(imgs)
-            loss_dist = nn.MSELoss()(outputs, feats_teacher)
-        else:
-            loss_dist = 0.0
-
-
-
-        # total loss
-        loss_total = (
-            lambda_new * loss_new +
-            lambda_dist * loss_dist         )
-
-        loss_total.backward()
-        optimizer.step()
-
-        # accuracy
-        _, preds = torch.max(outputs, 1)
-        acc = (preds == labels).float().mean().item()
-
-        batch_sz = labels.size(0)
-        running_loss += loss_total.item() * batch_sz
-        running_acc += acc * batch_sz
-        num_samples += batch_sz
-
-    epoch_loss = running_loss / num_samples
-    epoch_acc = running_acc / num_samples
-
-    return epoch_loss, epoch_acc
-
-# ---------------------------------------------
-# Fine-tuning pipeline (main)
-# ---------------------------------------------
 
 def fine_tune(
     batch_size: int = 32,
@@ -102,166 +172,116 @@ def fine_tune(
     epochs: int = 300,
     lr: float = 1e-3,
     seed: int = 42,
-    num_train_samples = 100,
-    fine_tuning_on: str = 'stylegan2',
-    backbone: str = 'stylegan1',
-    checkpoint_file: str = "checkpoint/checkpoint_HELLO_icarl.pth",
-    order: str = '[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
-    lambda_new: float = 1.0,
-    lambda_dist: float = 1.0,
-
+    pretrained_model: str = 'stylegan1',
+    log_folder: str = './logs_icarl',
+    num_points: int = None,
+    order: str = '[stylegan1, stylegan2, sdv1.4, stylegan3, stylegan_xl, sdv2_1]',
+    lambda_distill: float = 1.0,
+    how_many: int = 100,
 ):
+    """ICaRL fine-tune relative-representation classifier."""
 
-    """Fine-tune relative-representation classifier.
-
-    load_checkpoint: if True, attempt to load checkpoint_file into the classifier before training.
-    checkpoint_file: path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)
-
-    Returns:
-        dict: test_results mapping dataset name -> {loss, acc, feat_time}
-    """
-    device = torch.device("cuda:"+device if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    checkpoint_dir = "./checkpoint_icarl"
-    logs_dir = "./logs_icarl"
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs(logs_dir, exist_ok=True)
-
+    device = torch.device(f'cuda:{device}' if torch.cuda.is_available() else 'cpu')
     torch.manual_seed(seed)
     np.random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    os.makedirs(log_folder, exist_ok=True)
 
-    # Backbone
-    backbone_net = load_pretrained_model(PRETRAINED_MODELS[backbone])
-
-    classifier = backbone_net.to(device)
-    order_list = [x.strip() for x in order.strip('[]').split(',')]
-    print(f"Using order: {order_list}") 
-    task_idx = order_list.index(fine_tuning_on)
-
-    if task_idx > 0:
-        teacher = load_pretrained_model(checkpoint_file).to(device)
-        for p in teacher.parameters():
-            p.requires_grad = False
-        teacher.eval()
-        print(f"Using teacher model: {checkpoint_file}")
-    else:
-        teacher = None
-
-    # Dataset directories
-    real_dir = IMAGE_DIR['real']
-    fake_dir = IMAGE_DIR[fine_tuning_on]
-
-    dataset = RealSynthethicDataloader(real_dir, fake_dir, num_training_samples=num_train_samples)
-
-    full_dataset = dataset
-
-    train_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    # model is the pretrained model 
+    model = load_pretrained_model(PRETRAINED_MODELS[pretrained_model])
+    model.to(device)
+    old_model = None
+    num_old_classes = 0
+    exemplar_set = None
+    print(f'Loaded pretrained model from {PRETRAINED_MODELS[pretrained_model]}')
 
 
-    criterion = nn.CrossEntropyLoss().to(device)
-    optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
+    for step in order.strip('[]').split(', '):
+        # Dataset directories
+        real_dir = IMAGE_DIR['real']
+        fake_dir = IMAGE_DIR[step]
+        dataset = RealSynthethicDataloader(real_dir, fake_dir, num_points=num_points)
 
-    # Training loop
-    start_time = time.time()
-    for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch_icarl(classifier, teacher, train_loader, criterion, optimizer, device, batch_size=batch_size, save_dir="./logs_icarl/train", task_name=fine_tuning_on, lambda_new=lambda_new, lambda_dist=lambda_dist)
-        print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-        print(f"Training completed for task {fine_tuning_on}")
-    train_time = time.time() - start_time
-    print(f"Training completed in {train_time/60:.2f} minutes")
+        from torch.utils.data import ConcatDataset, TensorDataset
 
-    # Save checkpoint to the specified checkpoint_file (USER REQUEST)
-    checkpoint_path = checkpoint_file
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    torch.save({'state_dict': classifier.state_dict()}, checkpoint_path)
-    print(f"Model saved to {checkpoint_path}")
+        if exemplar_set is not None and len(exemplar_set) > 0:
+            old_images, old_labels = zip(*exemplar_set)
+            old_dataset = TensorDataset(torch.stack(old_images), torch.tensor(old_labels))
+            full_dataset = ConcatDataset([dataset, old_dataset])
+        else:
+            full_dataset = dataset
 
-    # Prepare test datasets
-    dataloaders_test = {
-        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set', num_training_samples=num_train_samples),
-        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set', num_training_samples=num_train_samples),
-        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set', num_training_samples=num_train_samples),
-        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set', num_training_samples=num_train_samples),
-        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set', num_training_samples=num_train_samples),
-        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set', num_training_samples=num_train_samples),  # Uncomment if sdv2_1 is available
-    }
+        train_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+
+        
+        criterion = nn.CrossEntropyLoss()
+        optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+        # Training loop
+        start_time = time.time()
+        for epoch in range(epochs):
+            train_loss, train_acc = train_one_epoch_icarl_binary(model, old_model, train_loader, optimizer, device, num_old_classes)
+            print(f'Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}')
+        train_time = time.time() - start_time
+        print(f'Training completed in {train_time/60:.2f} minutes')
+
+        # Save checkpoint to the specified checkpoint_file (USER REQUEST)
+        checkpoint_path = os.path.join("checkpoint", f'icarl_pretrained_{pretrained_model}.pth')
+        os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+        torch.save({'state_dict': model.state_dict()}, checkpoint_path)
+        print(f'Model saved to {checkpoint_path}')
+        old_model = copy.deepcopy(model)
+        num_old_classes += 2  # Real and Fake classes added
+        exemplar_set = update_exemplar_set_icarl(model, dataset, exemplar_set, device, how_many=100)
+
+        # Prepare test datasets
+        dataloaders_test = {
+            "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set', num_points=100),
+            "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set', num_points=100),
+            "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set', num_points=100),
+            "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set', num_points=100),
+            "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set', num_points=100),
+            "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set', num_points=100),  # Uncomment if sdv2_1 is available
+
+        }
+
+        test_results = {}
+        for name, dataset in dataloaders_test.items():
+            test_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+            test_acc = evaluate(model, test_dataloader, device)
+            print(f'Test Accuracy on {name}: {test_acc:.4f}')
+            test_results[name] = test_acc
+            print(f'Test Accuracy on {name}: {test_acc:.4f}')
 
 
 
 
 
-    test_results = {}
-    for name, dataset in dataloaders_test.items():
 
-        test_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                                num_workers=num_workers)
-
-        fake_type = name
-        print(f"Evaluating on with fake type {fake_type}...")
-        acc, preds, labels = evaluate3(classifier, test_loader,  device,
-                              test_name=name, save_dir=logs_dir, task_name=fine_tuning_on,
-                              fake_type=fake_type)
-        test_results[name] = {"loss": 0, "acc": acc, "feat_time": 0, "preds": preds, "labels": labels}
-
-    # --- Append evaluation results to CSV ---
-    # CSV columns/order requested by user:
-    csv_columns = []
-    csv_columns.append("fine_tuning_on")
-    for o in order_list:
-        csv_columns.append(o)
-
-    
-    eval_csv_path = os.path.join(logs_dir, "eval_results_icarl.csv")
-    os.makedirs(os.path.dirname(eval_csv_path), exist_ok=True)
-
-    with open(eval_csv_path, 'a') as f:
-        if os.path.getsize(eval_csv_path) == 0:
-            # write header if file is empty
-            f.write(','.join(csv_columns) + '\n')
-
-        row = [fine_tuning_on]
-        for col in csv_columns[1:]:
-            if col in test_results:
-                row.append(f"{test_results[col]['acc']:.5f}")
-            else:
-                row.append('')
-        f.write(','.join(row) + '\n')
-    return test_results
-# ---------------------------------------------
-# Main CLI (kept for convenience)
-# ---------------------------------------------
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
     parser.add_argument('--epochs', type=int, default=1)
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--num_train_samples', type=int, default=500,
-                        help="Number of training samples to use. If None, use all available samples.")
-    parser.add_argument('--backbone', type=str, default='stylegan1',
-                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4', 'stylegan3','sdv2_1'],
-                        help="Which backbone feature extractor to use")    
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO_icarl.pth',
-                        help="Path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)")
-    parser.add_argument('--order', default='[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
-                        help="Order of model steps for saving features.")
-    parser.add_argument('--lambda_new', type=float, default=1.0,
-                    help="Peso della loss sul task corrente")
-    parser.add_argument('--lambda_dist', type=float, default=1.0,
-                    help="Peso della distillation loss per le classi vecchie")
-
+    parser.add_argument('--pretrained_model', type=str, default='stylegan1', choices=['stylegan1', 'stylegan2', 'sdv1.4'], help='Pretrained model to load')
+    parser.add_argument('--log_folder', type=str, default='./logs_icarl', help='Directory to save logs')
+    parser.add_argument('--num_points', type=int, default=100, help='Number of real/fake images to use for training/testing - None uses all available data')
+    parser.add_argument('--order', type=str, default='[stylegan1, stylegan2, sdv1.4, stylegan3, stylegan_xl, sdv2_1]', help='Order of model steps for saving features')
+    parser.add_argument('--lambda_distill', type=float, default=1.0, help='Weight for distillation loss (iCaRL)')
+    parser.add_argument('--how_many', type=int, default=100, help='Number of exemplars to select from each class')
     args = parser.parse_args()
 
-
-    order_list = [x.strip() for x in args.order.strip('[]').split(',')]
-    for task in order_list:
-        results  = fine_tune(**vars(args), fine_tuning_on=task)  
-        print("All test results:")
-        for k, v in results.items():
-            print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")
+    fine_tune(
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        device=args.device,
+        epochs=args.epochs,
+        lr=args.lr,
+        seed=args.seed,
+        pretrained_model=args.pretrained_model,
+        log_folder=args.log_folder,
+        num_points=args.num_points,
+        order=args.order
+    )
