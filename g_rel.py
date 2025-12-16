@@ -245,8 +245,7 @@ def fine_tune(
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
         fake_type = name
         print(f"Evaluating on {name} with fake type {fake_type}...")
-        loss, acc, preds, labels = evaluate3(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
+        loss, acc, preds, labels = evaluate3(classifier, test_loader, criterion, device, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
                               fake_type=fake_type)
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time, "preds": preds, "labels": labels}
 
@@ -274,7 +273,12 @@ def fine_tune(
             else:
                 row.append('')
         f.write(','.join(row) + '\n')
-    return test_results, anchors
+    classifier.eval()
+    classifier.to(device)
+    anchors = anchors.to(device)
+    anchros_logits = classifier(anchors)
+    anchros_logits = anchros_logits.detach().cpu().numpy()
+    return test_results, anchors, anchros_logits
 
 
 # ---------------------------------------------
@@ -324,7 +328,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # pass explicit keyword args to the function (no argparse.Namespace usage inside fine_tune)
-    results, anchors = fine_tune(**vars(args))
+    results, anchors, _ = fine_tune(**vars(args))
     print("All test results:")
     for k, v in results.items():
         print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")

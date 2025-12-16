@@ -10,86 +10,103 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import numpy as np
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, TensorDataset
-from torch.utils.data import ConcatDataset, TensorDataset
+from torch.utils.data import DataLoader
+
 
 # === Project imports - adjust these to your repo layout ===
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 
-def evaluate3(model, dataloader, device, test_name="test", save_dir=None, task_name="task", fake_type="fake"):
+from src.g_utils import evaluate3
+
+def select_exemplars(model, dataset, m, device):
+    """
+    model: backbone addestrato sul task corrente
+    dataset: dataloader del task corrente
+    m: numero di esemplari da mantenere
+    """
     model.eval()
-    running_acc, num_samples = 0.0, 0.0
+    exemplars_imgs = []
+    exemplars_labels = []
+    
+    loader = DataLoader(dataset, batch_size=64, shuffle=False)
     with torch.no_grad():
-        for i, batch in enumerate(dataloader):
-            imgs, labels = batch
-            imgs, labels = imgs.to(device), labels.to(device)
-            outputs = model(imgs)
-            _, preds = torch.max(outputs, 1)
-            acc = (preds == labels).float().mean().item()
-            running_acc += acc * labels.size(0)
-            num_samples += labels.size(0)
-    epoch_acc = running_acc / num_samples
-    print(f"{test_name} acc: {epoch_acc:.4f}")
-    if save_dir is not None:
-        save_path = os.path.join(save_dir, f"{test_name}_{fake_type}_{task_name}.npy")
-    return epoch_acc, preds.cpu().numpy(), labels.cpu().numpy() 
+        for imgs, labels in loader:
+            imgs = imgs.to(device)
+            feats = model(imgs)  # estrai feature
+            # qui puoi usare ad esempio il metodo iCaRL originale: closest-to-mean selection
+            # per semplicità, salviamo un subset casuale
+            for img, label in zip(imgs.cpu(), labels.cpu()):
+                if len(exemplars_imgs) < m:
+                    exemplars_imgs.append(img)
+                    exemplars_labels.append(label)
+    
+    imgs_tensor = torch.stack(exemplars_imgs)
+    labels_tensor = torch.tensor(exemplars_labels)
+    return imgs_tensor, labels_tensor
+
+from torch.utils.data import TensorDataset, DataLoader
+
+def get_exemplar_loader(exemplar_set, batch_size=64, shuffle=True):
+    if exemplar_set is None:
+        return None
+    imgs, labels = exemplar_set
+    dataset = TensorDataset(imgs, labels)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
+    return loader
 
 
-def train_one_epoch_icarl(model, teacher, dataloader, criterion, optimizer, device, batch_size=32,
-                          lambda_new=1.0, lambda_dist=1.0, 
-                          save_dir=None, task_name="task"):
-
+def train_one_epoch_ucir(model, teacher, dataloader, criterion, optimizer, device,
+                         lambda_new=1.0, lambda_dist=1.0, lambda_exemplar=1.0,
+                         save_dir=None, task_name="task", exemplar_loader=None):
     model.train()
     running_loss, running_acc, num_samples = 0.0, 0.0, 0
 
-
-
-
-    # --- training loop ---
     for imgs, labels in dataloader:
-
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad()
 
-        # forward
+        # forward per batch corrente
         outputs = model(imgs)
-
-        # new task loss
         loss_new = criterion(outputs, labels)
 
+        # loss sugli exemplars in batch
+        loss_exemplar = 0.0
+        if exemplar_loader is not None:
+            for ex_imgs, ex_labels in exemplar_loader:
+                ex_imgs, ex_labels = ex_imgs.to(device), ex_labels.to(device)
+                ex_outputs = model(ex_imgs)
+                loss_exemplar += criterion(ex_outputs, ex_labels)
+            loss_exemplar /= len(exemplar_loader)  # media
+
         # distillation loss
+        loss_dist = 0.0
         if teacher is not None:
+            T = 2.0
             with torch.no_grad():
-                feats_teacher = teacher(imgs)
-            loss_dist = nn.MSELoss()(outputs, feats_teacher)
-        else:
-            loss_dist = 0.0
+                logits_teacher = teacher(imgs)
+                soft_targets = torch.softmax(logits_teacher / T, dim=1)
+            loss_dist = nn.KLDivLoss(reduction='batchmean')(
+                torch.log_softmax(outputs / T, dim=1),
+                soft_targets
+            ) * (T*T)
 
-
-
-        # total loss
-        loss_total = (
-            lambda_new * loss_new +
-            lambda_dist * loss_dist         )
-
+        # combinazione
+        loss_total = lambda_new * loss_new + lambda_dist * loss_dist + lambda_exemplar * loss_exemplar
         loss_total.backward()
         optimizer.step()
 
-        # accuracy
+        # accuracy batch
         _, preds = torch.max(outputs, 1)
         acc = (preds == labels).float().mean().item()
+        batch_size = labels.size(0)
+        running_loss += loss_total.item() * batch_size
+        running_acc += acc * batch_size
+        num_samples += batch_size
 
-        batch_sz = labels.size(0)
-        running_loss += loss_total.item() * batch_sz
-        running_acc += acc * batch_sz
-        num_samples += batch_sz
+    return running_loss / num_samples, running_acc / num_samples
 
-    epoch_loss = running_loss / num_samples
-    epoch_acc = running_acc / num_samples
-
-    return epoch_loss, epoch_acc
 
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
@@ -109,7 +126,9 @@ def fine_tune(
     order: str = '[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
     lambda_new: float = 1.0,
     lambda_dist: float = 1.0,
-
+    lambda_exemplar: float = 1.0,
+    number_exemplars: int = 5000,
+    exemplar_set: str = None,
 ):
 
     """Fine-tune relative-representation classifier.
@@ -123,8 +142,8 @@ def fine_tune(
     device = torch.device("cuda:"+device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    checkpoint_dir = "./checkpoint_icarl"
-    logs_dir = "./logs_icarl"
+    checkpoint_dir = "./checkpoint_ucir"
+    logs_dir = "./logs_ucir"
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
 
@@ -153,10 +172,16 @@ def fine_tune(
     # Dataset directories
     real_dir = IMAGE_DIR['real']
     fake_dir = IMAGE_DIR[fine_tuning_on]
-
     dataset = RealSynthethicDataloader(real_dir, fake_dir, num_training_samples=num_train_samples)
+    from torch.utils.data import ConcatDataset, TensorDataset
 
-    full_dataset = dataset
+    # crea il dataset degli exemplars
+    if exemplar_set is not None:
+        imgs_ex, labels_ex = exemplar_set
+        exemplar_dataset = TensorDataset(imgs_ex, labels_ex)
+        full_dataset = ConcatDataset([dataset, exemplar_dataset])
+    else:
+        full_dataset = dataset
 
     train_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
@@ -167,12 +192,41 @@ def fine_tune(
     # Training loop
     start_time = time.time()
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch_icarl(classifier, teacher, train_loader, criterion, optimizer, device, batch_size=batch_size, save_dir="./logs_icarl/train", task_name=fine_tuning_on, lambda_new=lambda_new, lambda_dist=lambda_dist)
+        exemplar_loader = get_exemplar_loader(exemplar_set, batch_size=batch_size)
+        train_loss, train_acc = train_one_epoch_ucir(
+            model=classifier,
+            teacher=teacher,
+            dataloader=train_loader,
+            criterion=criterion,
+            optimizer=optimizer,
+            device=device,
+            lambda_new=lambda_new,
+            lambda_dist=lambda_dist,
+            lambda_exemplar=lambda_exemplar,
+            exemplar_loader=exemplar_loader,
+            save_dir="./logs_ucir/train",
+            task_name=fine_tuning_on
+        )
         print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-        print(f"Training completed for task {fine_tuning_on}")
     train_time = time.time() - start_time
     print(f"Training completed in {train_time/60:.2f} minutes")
 
+    new_exemplar_set = select_exemplars(classifier, dataset, number_exemplars, device)
+    imgs_new, labels_new = new_exemplar_set
+    if exemplar_set is None:
+        exemplar_set = (imgs_new, labels_new)
+    else:
+        imgs_old, labels_old = exemplar_set
+        imgs_total = torch.cat([imgs_old, imgs_new])
+        labels_total = torch.cat([labels_old, labels_new])
+        
+        # Riduci se superiamo number_exemplars
+        if imgs_total.size(0) > number_exemplars:
+            idx = torch.randperm(imgs_total.size(0))[:number_exemplars]
+            imgs_total = imgs_total[idx]
+            labels_total = labels_total[idx]
+
+        exemplar_set = (imgs_total, labels_total)
     # Save checkpoint to the specified checkpoint_file (USER REQUEST)
     checkpoint_path = checkpoint_file
     os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
@@ -181,12 +235,12 @@ def fine_tune(
 
     # Prepare test datasets
     dataloaders_test = {
-        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set', num_training_samples=num_train_samples),
-        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set', num_training_samples=num_train_samples),
-        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set', num_training_samples=num_train_samples),
-        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set', num_training_samples=num_train_samples),
-        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set', num_training_samples=num_train_samples),
-        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set', num_training_samples=num_train_samples),  # Uncomment if sdv2_1 is available
+        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
+        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
+        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
+        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
     }
 
 
@@ -200,21 +254,22 @@ def fine_tune(
                                 num_workers=num_workers)
 
         fake_type = name
-        print(f"Evaluating on with fake type {fake_type}...")
-        acc, preds, labels = evaluate3(classifier, test_loader,  device,
+        print(f"Evaluating on {name} with fake type {fake_type}...")
+        loss, acc, preds, labels = evaluate3(classifier, test_loader, criterion, device,
                               test_name=name, save_dir=logs_dir, task_name=fine_tuning_on,
                               fake_type=fake_type)
-        test_results[name] = {"loss": 0, "acc": acc, "feat_time": 0, "preds": preds, "labels": labels}
+        test_results[name] = {"loss": loss, "acc": acc, "feat_time": 0, "preds": preds, "labels": labels}
 
     # --- Append evaluation results to CSV ---
     # CSV columns/order requested by user:
     csv_columns = []
     csv_columns.append("fine_tuning_on")
-    for o in order_list:
+    for o in order:
         csv_columns.append(o)
 
-    
-    eval_csv_path = os.path.join(logs_dir, "eval_results_icarl.csv")
+    # Default path if not provided
+    if eval_csv_path is None:
+        eval_csv_path = os.path.join(logs_dir, "eval_results_ucir.csv")
     os.makedirs(os.path.dirname(eval_csv_path), exist_ok=True)
 
     with open(eval_csv_path, 'a') as f:
@@ -229,7 +284,7 @@ def fine_tune(
             else:
                 row.append('')
         f.write(','.join(row) + '\n')
-    return test_results
+    return test_results, exemplar_set
 # ---------------------------------------------
 # Main CLI (kept for convenience)
 # ---------------------------------------------
@@ -242,12 +297,12 @@ if __name__ == "__main__":
     parser.add_argument('--epochs', type=int, default=1)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--num_train_samples', type=int, default=500,
+    parser.add_argument('--num_train_samples', type=int, default=100,
                         help="Number of training samples to use. If None, use all available samples.")
     parser.add_argument('--backbone', type=str, default='stylegan1',
                         choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4', 'stylegan3','sdv2_1'],
                         help="Which backbone feature extractor to use")    
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO_icarl.pth',
+    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO_ucir.pth',
                         help="Path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)")
     parser.add_argument('--order', default='[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
                         help="Order of model steps for saving features.")
@@ -255,13 +310,16 @@ if __name__ == "__main__":
                     help="Peso della loss sul task corrente")
     parser.add_argument('--lambda_dist', type=float, default=1.0,
                     help="Peso della distillation loss per le classi vecchie")
-
+    parser.add_argument('--lambda_exemplar', type=float, default=0,
+                    help="Peso opzionale per la loss sugli esemplari (se usati)")
+    parser.add_argument('--number_exemplars', type=int, default=10,
+                    help="Numero di esemplari da mantenere (se usati)")
     args = parser.parse_args()
 
-
+    exemplar = None
     order_list = [x.strip() for x in args.order.strip('[]').split(',')]
     for task in order_list:
-        results  = fine_tune(**vars(args), fine_tuning_on=task)  
+        results, exemplar = fine_tune(**vars(args), fine_tuning_on=task, exemplar_set=exemplar)  
         print("All test results:")
         for k, v in results.items():
             print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")
