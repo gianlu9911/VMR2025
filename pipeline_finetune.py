@@ -321,7 +321,7 @@ def get_labels_array_from_dataset(dataset) -> np.ndarray:
 
 def train_and_eval(args):
     set_global_seed(args.seed)
-    device = get_device(args.device)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     tasks = [t.strip() for t in args.tasks.split(",") if t.strip()]
@@ -549,6 +549,14 @@ if __name__ == '__main__':
     parser.add_argument('--replacement', action='store_true',
                         help='When oversampling, sample with replacement where needed')
     args = parser.parse_args()
-
-    results = train_and_eval(args)
-    print(results)
+    orders = [
+        "stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1",
+        "stylegan1, stylegan2, stylegan3, stylegan_xl, sdv1_4, sdv2_1",
+        "sdv1_4, sdv2_1, stylegan1, stylegan2, stylegan3, stylegan_xl",
+        #random order from stylegan2
+        "stylegan2, stylegan3,  sdv2_1,stylegan1,stylegan_xl, sdv1_4"
+    ]
+    for o in orders:
+        args.tasks = o
+        results = train_and_eval(args)
+        print(results)

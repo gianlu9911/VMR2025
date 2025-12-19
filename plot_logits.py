@@ -39,20 +39,21 @@ for i, step in enumerate(steps):
     plt.figure()
     plt.scatter(
         anchors[:, 0], anchors[:, 1],
-        marker="*", c="black", label="Anchors (50)"
+        marker="*", c="black", label="Anchors", alpha=0.7
     )
 
     fake_color = reds((i + 1) / n_steps)
     plt.scatter(
         fake_logits[:, 0], fake_logits[:, 1],
-        c=[fake_color], label=f"Fake {step}"
+        c=[fake_color], label=f"Fake {step}", alpha=0.5
     )
 
     plt.scatter(
         real_logits[:, 0], real_logits[:, 1],
-        marker="^", c="green", label="Real"
+        marker="^", c="green", label="Real", alpha=0.7
     )
-
+    plt.xlim(-5,5)
+    plt.ylim(-5,5)
     plt.title(f"{step} : current logits")
     plt.xlabel("logit dim 1")
     plt.ylabel("logit dim 2")
@@ -65,7 +66,7 @@ for i, step in enumerate(steps):
     plt.figure()
     plt.scatter(
         anchors[:, 0], anchors[:, 1],
-        marker="*", c="black", label="Anchors (50)"
+        marker="*", c="black", label="Anchors", alpha=0.5,
     )
 
     for j, past_step in enumerate(steps[:i + 1]):
@@ -82,10 +83,13 @@ for i, step in enumerate(steps):
 
     plt.scatter(
         real_logits[:, 0], real_logits[:, 1],
-        marker="^", c="green", label="Real (current)"
+        marker="^", c="green", label="Real", alpha=0.7
     )
 
     plt.title(f"{step} : fake logits from past steps")
+    plt.xlim(-5,5)
+    plt.ylim(-5,5)
+    plt.grid(True, z_order=-1)
     plt.xlabel("Class 0")
     plt.ylabel("Class 1")
     plt.legend()

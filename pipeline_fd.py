@@ -334,12 +334,12 @@ def train_and_eval(args):
         print(f"Saved last checkpoint: {last_ckpt}")
 
         test_domains = {
-            "real_vs_stylegan1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan1'], split='test_set'),
-            "real_vs_stylegan2": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan2'], split='test_set'),
-            "real_vs_sdv1_4": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv1_4'], split='test_set'),
-            "real_vs_stylegan3": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan3'], split='test_set'),
-            "real_vs_styleganxl": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan_xl'], split='test_set'),
-            "real_vs_sdv2_1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv2_1'], split='test_set'),
+            "real_vs_stylegan1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan1'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_stylegan2": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan2'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_sdv1_4": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv1_4'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_stylegan3": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan3'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_styleganxl": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan_xl'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_sdv2_1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv2_1'], split='test_set', num_training_samples=args.max_train_samples),
         }
         row = {"task": task}
         test_accs = []
@@ -379,9 +379,9 @@ if __name__ == '__main__':
     parser.add_argument('--initial_backbone', type=str, default='stylegan1', choices=list(PRETRAINED_MODELS.keys()))
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',
                         help='Comma-separated list of tasks to train on sequentially')
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--epochs_per_task', type=int, default=10)
+    parser.add_argument('--epochs_per_task', type=int, default=5)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--seed', type=int, default=42)
@@ -407,5 +407,14 @@ if __name__ == '__main__':
     parser.add_argument('--distill_lambda', type=float, default=1.0, help='Weight for feature distillation loss (MSE)')
 
     args = parser.parse_args()
-    results = train_and_eval(args)
-    print(results)
+    orders = [
+        "stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1",
+        "stylegan1, stylegan2, stylegan3, stylegan_xl, sdv1_4, sdv2_1",
+        "sdv1_4, sdv2_1, stylegan1, stylegan2, stylegan3, stylegan_xl",
+        #random order from stylegan2
+        "stylegan2, stylegan3,  sdv2_1,stylegan1,stylegan_xl, sdv1_4"
+    ]
+    for o in orders:
+        args.tasks = o
+        results = train_and_eval(args)
+        print(results)

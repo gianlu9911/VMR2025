@@ -1,6 +1,6 @@
 import copy
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from torch.utils.data import ConcatDataset
 import torch
 import torch.nn as nn
@@ -175,7 +175,7 @@ def fine_tune(
     pretrained_model: str = 'stylegan1',
     log_folder: str = './logs_icarl',
     num_points: int = None,
-    order: str = '[stylegan1, stylegan2, sdv1.4, stylegan3, stylegan_xl, sdv2_1]',
+    order: str = '[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
     lambda_distill: float = 1.0,
     how_many: int = 100,
 ):
@@ -203,12 +203,12 @@ def fine_tune(
 
         from torch.utils.data import ConcatDataset, TensorDataset
 
-        if exemplar_set is not None and len(exemplar_set) > 0:
-            old_images, old_labels = zip(*exemplar_set)
-            old_dataset = TensorDataset(torch.stack(old_images), torch.tensor(old_labels))
-            full_dataset = ConcatDataset([dataset, old_dataset])
-        else:
-            full_dataset = dataset
+        #if exemplar_set is not None and len(exemplar_set) > 0:
+           # old_images, old_labels = zip(*exemplar_set)
+          #  old_dataset = TensorDataset(torch.stack(old_images), torch.tensor(old_labels))
+         #   full_dataset = ConcatDataset([dataset, old_dataset])
+        #else:
+        full_dataset = dataset
 
         train_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
@@ -231,17 +231,16 @@ def fine_tune(
         print(f'Model saved to {checkpoint_path}')
         old_model = copy.deepcopy(model)
         num_old_classes += 2  # Real and Fake classes added
-        exemplar_set = update_exemplar_set_icarl(model, dataset, exemplar_set, device, how_many=100)
+        #exemplar_set = update_exemplar_set_icarl(model, dataset, exemplar_set, device, how_many=100)
 
         # Prepare test datasets
         dataloaders_test = {
-            "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set', num_points=100),
-            "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set', num_points=100),
-            "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set', num_points=100),
-            "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set', num_points=100),
-            "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set', num_points=100),
-            "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set', num_points=100),  # Uncomment if sdv2_1 is available
-
+            "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
+            "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
+            "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
+            "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+            "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+            "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
         }
 
         test_results = {}
@@ -259,29 +258,36 @@ def fine_tune(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=1)
+    parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--pretrained_model', type=str, default='stylegan1', choices=['stylegan1', 'stylegan2', 'sdv1.4'], help='Pretrained model to load')
     parser.add_argument('--log_folder', type=str, default='./logs_icarl', help='Directory to save logs')
-    parser.add_argument('--num_points', type=int, default=100, help='Number of real/fake images to use for training/testing - None uses all available data')
+    parser.add_argument('--num_points', type=int, default=None, help='Number of real/fake images to use for training/testing - None uses all available data')
     parser.add_argument('--order', type=str, default='[stylegan1, stylegan2, sdv1.4, stylegan3, stylegan_xl, sdv2_1]', help='Order of model steps for saving features')
     parser.add_argument('--lambda_distill', type=float, default=1.0, help='Weight for distillation loss (iCaRL)')
-    parser.add_argument('--how_many', type=int, default=100, help='Number of exemplars to select from each class')
+    parser.add_argument('--how_many', type=int, default=0, help='Number of exemplars to select from each class')
     args = parser.parse_args()
-
-    fine_tune(
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        device=args.device,
-        epochs=args.epochs,
-        lr=args.lr,
-        seed=args.seed,
-        pretrained_model=args.pretrained_model,
-        log_folder=args.log_folder,
-        num_points=args.num_points,
-        order=args.order
-    )
+    orders = [
+        "[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]",
+        "[stylegan1, stylegan2, stylegan3, stylegan_xl, sdv1_4, sdv2_1]",
+        "[sdv1_4, sdv2_1, stylegan1, stylegan2, stylegan3, stylegan_xl]",
+        #random order from stylegan2
+        "[stylegan2, stylegan3,  sdv2_1,stylegan1,stylegan_xl, sdv1_4]"
+    ]
+    for o in orders:
+        fine_tune(
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            device=args.device,
+            epochs=args.epochs,
+            lr=args.lr,
+            seed=args.seed,
+            pretrained_model=args.pretrained_model,
+            log_folder=args.log_folder,
+            num_points=args.num_points,
+            order=o
+        )

@@ -235,12 +235,13 @@ def fine_tune(
 
     # Prepare test datasets
     dataloaders_test = {
-        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
-        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
-        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
+        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set', num_training_samples=100),
+        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set', num_training_samples=100),
+        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set', num_training_samples=100),
+        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set', num_training_samples=100),
+        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set', num_training_samples=100),
+        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set', num_training_samples=100),  # Uncomment if sdv2_1 is available
+
     }
 
 
@@ -268,8 +269,7 @@ def fine_tune(
         csv_columns.append(o)
 
     # Default path if not provided
-    if eval_csv_path is None:
-        eval_csv_path = os.path.join(logs_dir, "eval_results_ucir.csv")
+    eval_csv_path = os.path.join(logs_dir, "eval_results_ucir.csv")
     os.makedirs(os.path.dirname(eval_csv_path), exist_ok=True)
 
     with open(eval_csv_path, 'a') as f:
