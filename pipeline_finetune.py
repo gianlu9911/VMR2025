@@ -21,7 +21,7 @@ import argparse
 import warnings
 warnings.filterwarnings("ignore")
 # change visible devices if needed
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+#s.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import random
 import math

@@ -1,6 +1,7 @@
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
+import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -120,20 +121,22 @@ def fine_tune(args):
     fake_sd14_dir = IMAGE_DIR['sdv1_4']
     fake_xl_dir = IMAGE_DIR['stylegan_xl']
     fake_st3_dir = IMAGE_DIR['stylegan3']
+    fake_sdv21_dir = IMAGE_DIR['sdv2_1']
 
     dataset = RealSynthethicDataloader(real_dir, IMAGE_DIR[args.finetune_on], num_points=args.num_points)
-    test_st1 = RealSynthethicDataloader(real_dir, fake_st1_dir, split='test_set')
-    test_sd14 = RealSynthethicDataloader(real_dir, fake_sd14_dir, split='test_set')
-    test_xl = RealSynthethicDataloader(real_dir, fake_xl_dir, split='test_set')
-    test_st2 = RealSynthethicDataloader(real_dir, fake_st2_dir, split='test_set')
-    test_st3 = RealSynthethicDataloader(real_dir, fake_st3_dir, split='test_set')
+    test_st1 = RealSynthethicDataloader(real_dir, fake_st1_dir, split='test_set', num_points=args.num_points)
+    test_sd14 = RealSynthethicDataloader(real_dir, fake_sd14_dir, split='test_set', num_points=args.num_points)
+    test_xl = RealSynthethicDataloader(real_dir, fake_xl_dir, split='test_set', num_points=args.num_points)
+    test_sdv21 = RealSynthethicDataloader(real_dir, fake_sdv21_dir, split='test_set', num_points=args.num_points)
+    test_st2 = RealSynthethicDataloader(real_dir, fake_st2_dir, split='test_set', num_points=args.num_points)
+    test_st3 = RealSynthethicDataloader(real_dir, fake_st3_dir, split='test_set', num_points=args.num_points)
     dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
     dataloader_st1 = DataLoader(test_st1, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dataloader_sd14 = DataLoader(test_sd14, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dataloader_xl = DataLoader(test_xl, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dataloader_st2 = DataLoader(test_st2, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     dataloader_st3 = DataLoader(test_st3, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-
+    dataloader_sdv21 = DataLoader(test_sdv21, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
     
 
     if os.path.exists(save_path):
@@ -183,27 +186,63 @@ def fine_tune(args):
         "real vs stylegan2": dataloader_st2,
         "real vs styleganxl": dataloader_xl,
         "real vs sdv1_4": dataloader_sd14,
-        "real va stylegan3": dataloader_st3,  # Assuming stylegan3 uses the same loader as stylegan2 for this example
+        "real vs sdv2_1": dataloader_sdv21,
+        "real vs stylegan3": dataloader_st3,  # Assuming stylegan3 uses the same loader as stylegan2 for this example
     }
+    results = {}
 
     for name, loader in test_sets.items():
         test_loss, test_acc = evaluate(model, loader, criterion, device)
+        #extract the task name from the name
+        task = name.split(" ")[2]
+        print(f"[{task}] - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
         print(f"[{name}] - Loss: {test_loss:.4f}, Acc: {test_acc:.4f}")
+        results[task] = test_acc
+    return pd.DataFrame([results])
 
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--pretrained_model', type=str, default='stylegan1', choices=['stylegan1', 'stylegan2', 'sdv1.4'], help='Pretrained model to load')
     parser.add_argument('--finetune_on', type=str, default='stylegan2', choices=['stylegan2', 'sdv1.4'], help='Dataset to fine-tune on')
-    parser.add_argument('--log_folder', type=str, default='./logs', help='Directory to save logs')
+    parser.add_argument('--log_folder', type=str, default='./logs_finetune', help='Directory to save logs')
     parser.add_argument('--num_points', type=int, default=None, help='Number of real/fake images to use for training/testing - None uses all available data')
     args = parser.parse_args()
+    orders = [
+        "stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1",
+        "stylegan1, stylegan2, stylegan3, stylegan_xl, sdv1_4, sdv2_1",
+        "sdv1_4, sdv2_1, stylegan1, stylegan2, stylegan3, stylegan_xl",
+        #random order from stylegan2
+        "stylegan2, stylegan3,  sdv2_1,stylegan1,stylegan_xl, sdv1_4"
+    ]
+    import os
 
-    fine_tune(args)
+    for o in orders:
+        print(f"Training order: {o}")
+        args.tasks = o
+        order_str = o.replace(" ", "").replace(",", "_")
+
+        for task in o.split(","):
+            task = task.strip()
+            print(f"Fine-tuning on task: {task}")
+            args.finetune_on = task
+            results = fine_tune(args)
+
+            path = f"logs_finetune/new_sequential_finetune_results_{order_str}.csv"
+
+            # scrive header solo se il file NON esiste
+            write_header = not os.path.exists(path)
+
+            results.to_csv(
+                path,
+                mode="a",          # append
+                header=write_header,
+                index=False
+            )

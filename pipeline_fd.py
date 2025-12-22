@@ -20,7 +20,7 @@ import time
 import argparse
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import random
 import math
@@ -375,13 +375,13 @@ def train_and_eval(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--device', type=str, default='cuda:1')
+    parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--initial_backbone', type=str, default='stylegan1', choices=list(PRETRAINED_MODELS.keys()))
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',
                         help='Comma-separated list of tasks to train on sequentially')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--epochs_per_task', type=int, default=5)
+    parser.add_argument('--epochs_per_task', type=int, default=1)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--seed', type=int, default=42)
@@ -414,7 +414,22 @@ if __name__ == '__main__':
         #random order from stylegan2
         "stylegan2, stylegan3,  sdv2_1,stylegan1,stylegan_xl, sdv1_4"
     ]
+    import os
+
     for o in orders:
         args.tasks = o
         results = train_and_eval(args)
-        print(results)
+
+        order_str = o.replace(" ", "").replace(",", "_")
+        path = f"logs_fd/new_sequential_fd_results_{order_str}.csv"
+
+        # scrive header solo se il file NON esiste
+        write_header = not os.path.exists(path)
+
+        results.to_csv(
+            path,
+            mode="a",          # append
+            header=write_header,
+            index=False
+        )
+
