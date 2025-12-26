@@ -1,7 +1,7 @@
 import os
 
 DATASET_DIR = '/oblivion/Datasets/FFHQ' # FFHQ dataset root path
-CHECKPOINT_DIR = os.path.join(os.getcwd(), 'checkpoint') # pretrained model checkpoints
+CHECKPOINT_DIR = os.path.join(os.getcwd(), '../checkpoint') # pretrained model checkpoints
 
 PRETRAINED_MODELS = {
     'stylegan1' : os.path.join(CHECKPOINT_DIR, 'res50_sg1.pth.tar'),
