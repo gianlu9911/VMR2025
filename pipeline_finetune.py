@@ -334,7 +334,7 @@ def train_and_eval(args):
 
     checkpoint_dir = "./checkpoint_finetune"
     os.makedirs(checkpoint_dir, exist_ok=True)
-    os.makedirs("./logs_finetuning", exist_ok=True)
+    os.makedirs("./logs_finetune", exist_ok=True)
 
     results = []
     prev_ckpt = None
@@ -346,7 +346,7 @@ def train_and_eval(args):
         print(f"Task {step}/{len(tasks)}: train on {task}")
 
         # prepare full dataset
-        train_dataset = RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR[task])
+        train_dataset = RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR[task], split='train_set', num_training_samples=args.max_train_samples)
         total_train = len(train_dataset)
         print(f"Full dataset size: {total_train}")
 
@@ -488,12 +488,12 @@ def train_and_eval(args):
 
         # evaluation on test sets
         test_domains = {
-            "real_vs_stylegan1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan1'], split='test_set'),
-            "real_vs_stylegan2": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan2'], split='test_set'),
-            "real_vs_sdv1_4": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv1_4'], split='test_set'),
-            "real_vs_stylegan3": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan3'], split='test_set'),
-            "real_vs_styleganxl": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan_xl'], split='test_set'),
-            "real_vs_sdv2_1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv2_1'], split='test_set'),
+            "real_vs_stylegan1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan1'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_stylegan2": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan2'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_sdv1_4": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv1_4'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_stylegan3": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan3'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_styleganxl": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['stylegan_xl'], split='test_set', num_training_samples=args.max_train_samples),
+            "real_vs_sdv2_1": RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR['sdv2_1'], split='test_set', num_training_samples=args.max_train_samples),
         }
 
         row = {"task": task}
@@ -529,7 +529,7 @@ if __name__ == '__main__':
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',)
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--epochs_per_task', type=int, default=10)
+    parser.add_argument('--epochs_per_task', type=int, default=1)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--seed', type=int, default=42)
@@ -538,7 +538,7 @@ if __name__ == '__main__':
     parser.add_argument('--scheduler_step', type=int, default=5)
     parser.add_argument('--scheduler_gamma', type=float, default=0.5)
     parser.add_argument('--use_amp', action='store_true')
-    parser.add_argument('--max_train_samples', type=int, default=-1,
+    parser.add_argument('--max_train_samples', type=int, default=100,
                         help='Limit the number of training samples per task (-1 for all)')
     parser.add_argument('--balanced_subset', action='store_true', 
                         help='When used with --max_train_samples, create an exactly balanced subset across classes')
@@ -560,3 +560,16 @@ if __name__ == '__main__':
         args.tasks = o
         results = train_and_eval(args)
         print(results)
+
+        order_str = o.replace(" ", "").replace(",", "_")
+        path = f"logs_finetune/new_sequential_fd_results_{order_str}.csv"
+
+        # scrive header solo se il file NON esiste
+        write_header = not os.path.exists(path)
+
+        results.to_csv(
+            path,
+            mode="a",          # append
+            header=write_header,
+            index=False
+        )
