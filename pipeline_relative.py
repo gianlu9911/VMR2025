@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 from logger import *
 import numpy as np
 import torch
@@ -189,7 +189,8 @@ def run_sequential_finetunes(
             os.makedirs("anchros", exist_ok=True)
             os.makedirs("anchros_logits", exist_ok=True)
             np.save(f"anchros/step_{domain}_{n_anchros}.npy", new_anchros.cpu().numpy())
-            np.save(f"anchros_logits/step_{domain}_{n_anchros}.npy", anchros_logits)
+            os.makedirs(f"anchros_logits_{order}", exist_ok=True)
+            np.save(f"anchros_logits_{order}/step_{domain}_{n_anchros}.npy", anchros_logits)
             results_all[domain] = test_results
 
             # --- Compare old anchors and new anchors and save differences + human summaries ---
@@ -322,12 +323,12 @@ import matplotlib.pyplot as plt
 
 orders = [
     ['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl','sdv2_1'],
-    #['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl'],
-    #['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
-    #['stylegan2', 'sdv1_4', 'stylegan_xl', 'stylegan3', 'sdv2_1', 'stylegan1']
+    ['sdv1_4', 'sdv2_1','stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl'],
+    ['stylegan1', 'stylegan2', 'stylegan3', 'stylegan_xl', 'sdv1_4','sdv2_1'],
+    ['stylegan2', 'sdv1_4', 'stylegan_xl', 'stylegan3', 'sdv2_1', 'stylegan1']
 ]
 
-nas = [1000]
+nas = [100]
 
 # Qui salviamo tutto
 results_plot = {i: {"n_anchors": [], "ACC": [], "BWT": [], "FWT": []} 

@@ -1,65 +1,23 @@
-#!/usr/bin/env python3
 import os
 import time
 import warnings
-
-
-warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
-
 import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
+warnings.filterwarnings("ignore")
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
-# === Project imports - adjust these to your repo layout ===
+# === Project imports ===
+# Assicurati che questi file esistano nel tuo progetto
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-
 from src.g_utils import evaluate3
 
-def select_exemplars(model, dataset, m, device):
-    """
-    model: backbone addestrato sul task corrente
-    dataset: dataloader del task corrente
-    m: numero di esemplari da mantenere
-    """
-    model.eval()
-    exemplars_imgs = []
-    exemplars_labels = []
-    
-    loader = DataLoader(dataset, batch_size=64, shuffle=False)
-    with torch.no_grad():
-        for imgs, labels in loader:
-            imgs = imgs.to(device)
-            feats = model(imgs)  # estrai feature
-            # qui puoi usare ad esempio il metodo iCaRL originale: closest-to-mean selection
-            # per semplicità, salviamo un subset casuale
-            for img, label in zip(imgs.cpu(), labels.cpu()):
-                if len(exemplars_imgs) < m:
-                    exemplars_imgs.append(img)
-                    exemplars_labels.append(label)
-    
-    imgs_tensor = torch.stack(exemplars_imgs)
-    labels_tensor = torch.tensor(exemplars_labels)
-    return imgs_tensor, labels_tensor
-
-from torch.utils.data import TensorDataset, DataLoader
-
-def get_exemplar_loader(exemplar_set, batch_size=64, shuffle=True):
-    if exemplar_set is None:
-        return None
-    imgs, labels = exemplar_set
-    dataset = TensorDataset(imgs, labels)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=shuffle)
-    return loader
-
-
 def train_one_epoch_ucir(model, teacher, dataloader, criterion, optimizer, device,
-                         lambda_new=1.0, lambda_dist=1.0, lambda_exemplar=1.0,
-                         save_dir=None, task_name="task", exemplar_loader=None):
+                         lambda_new=1.0, lambda_dist=1.0):
     model.train()
     running_loss, running_acc, num_samples = 0.0, 0.0, 0
 
@@ -67,37 +25,30 @@ def train_one_epoch_ucir(model, teacher, dataloader, criterion, optimizer, devic
         imgs, labels = imgs.to(device), labels.to(device)
         optimizer.zero_grad()
 
-        # forward per batch corrente
+        # 1. Forward sul task corrente
         outputs = model(imgs)
         loss_new = criterion(outputs, labels)
 
-        # loss sugli exemplars in batch
-        loss_exemplar = 0.0
-        if exemplar_loader is not None:
-            for ex_imgs, ex_labels in exemplar_loader:
-                ex_imgs, ex_labels = ex_imgs.to(device), ex_labels.to(device)
-                ex_outputs = model(ex_imgs)
-                loss_exemplar += criterion(ex_outputs, ex_labels)
-            loss_exemplar /= len(exemplar_loader)  # media
-
-        # distillation loss
+        # 2. Distillation Loss (Knowledge Distillation)
+        # Il teacher (modello precedente) guida il modello attuale a non dimenticare
         loss_dist = 0.0
         if teacher is not None:
-            T = 2.0
+            T = 2.0  # Temperature
             with torch.no_grad():
                 logits_teacher = teacher(imgs)
                 soft_targets = torch.softmax(logits_teacher / T, dim=1)
+            
             loss_dist = nn.KLDivLoss(reduction='batchmean')(
                 torch.log_softmax(outputs / T, dim=1),
                 soft_targets
-            ) * (T*T)
+            ) * (T * T)
 
-        # combinazione
-        loss_total = lambda_new * loss_new + lambda_dist * loss_dist + lambda_exemplar * loss_exemplar
+        # 3. Loss Totale
+        loss_total = lambda_new * loss_new + lambda_dist * loss_dist 
         loss_total.backward()
         optimizer.step()
 
-        # accuracy batch
+        # Calcolo metriche batch
         _, preds = torch.max(outputs, 1)
         acc = (preds == labels).float().mean().item()
         batch_size = labels.size(0)
@@ -107,219 +58,179 @@ def train_one_epoch_ucir(model, teacher, dataloader, criterion, optimizer, devic
 
     return running_loss / num_samples, running_acc / num_samples
 
-
-# ---------------------------------------------
-# Fine-tuning pipeline (main)
-# ---------------------------------------------
-
 def fine_tune(
     batch_size: int = 32,
-    num_workers: int = 8,
+    num_workers: int = 0,
     device: str = '0',
-    epochs: int = 300,
-    lr: float = 1e-3,
+    epochs: int = 1,
+    lr: float = 1e-4,
     seed: int = 42,
     num_train_samples = 100,
     fine_tuning_on: str = 'stylegan2',
     backbone: str = 'stylegan1',
-    checkpoint_file: str = "checkpoint/checkpoint_HELLO_icarl.pth",
-    order: str = '[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
+    checkpoint_file: str = "checkpoint/ckpt_seq.pth", # File condiviso per passare i pesi
+    order: str = '',
     lambda_new: float = 1.0,
     lambda_dist: float = 1.0,
-    lambda_exemplar: float = 1.0,
-    number_exemplars: int = 5000,
-    exemplar_set: str = None,
 ):
+    device = torch.device(f"cuda:{device}" if torch.cuda.is_available() else "cpu")
+    print(f"\n>>> Training Task: {fine_tuning_on} (Backbone arch: {backbone})")
 
-    """Fine-tune relative-representation classifier.
-
-    load_checkpoint: if True, attempt to load checkpoint_file into the classifier before training.
-    checkpoint_file: path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)
-
-    Returns:
-        dict: test_results mapping dataset name -> {loss, acc, feat_time}
-    """
-    device = torch.device("cuda:"+device if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    checkpoint_dir = "./checkpoint_ucir"
     logs_dir = "./logs_ucir"
-    os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(logs_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(checkpoint_file), exist_ok=True)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
 
-    # Backbone
-    backbone_net = load_pretrained_model(PRETRAINED_MODELS[backbone])
+    # --- 1. CARICAMENTO MODELLO (Logica Sequenziale) ---
+    # Iniziamo caricando l'architettura base
+    classifier = load_pretrained_model(PRETRAINED_MODELS[backbone]).to(device)
+    teacher = None
 
-    classifier = backbone_net.to(device)
-    order_list = [x.strip() for x in order.strip('[]').split(',')]
-    print(f"Using order: {order_list}") 
-    task_idx = order_list.index(fine_tuning_on)
-
-    if task_idx > 0:
-        teacher = load_pretrained_model(checkpoint_file).to(device)
-        for p in teacher.parameters():
-            p.requires_grad = False
+    if os.path.exists(checkpoint_file):
+        print(f"--> Caricamento pesi dal task precedente: {checkpoint_file}")
+        # Carica lo stato del modello addestrato al passo precedente
+        ckpt = torch.load(checkpoint_file, map_location=device)
+        classifier.load_state_dict(ckpt['state_dict'])
+        
+        # Il teacher è una copia ESATTA del modello PRIMA di iniziare questo task
+        teacher = load_pretrained_model(PRETRAINED_MODELS[backbone]).to(device)
+        teacher.load_state_dict(ckpt['state_dict'])
         teacher.eval()
-        print(f"Using teacher model: {checkpoint_file}")
+        for p in teacher.parameters(): 
+            p.requires_grad = False
+        print("--> Teacher inizializzato per Distillation")
     else:
-        teacher = None
+        print(f"--> Nessun checkpoint trovato. Inizio dal Backbone puro: {backbone}")
 
-    # Dataset directories
-    real_dir = IMAGE_DIR['real']
-    fake_dir = IMAGE_DIR[fine_tuning_on]
-    dataset = RealSynthethicDataloader(real_dir, fake_dir, num_training_samples=num_train_samples)
-    from torch.utils.data import ConcatDataset, TensorDataset
-
-    # crea il dataset degli exemplars
-    if exemplar_set is not None:
-        imgs_ex, labels_ex = exemplar_set
-        exemplar_dataset = TensorDataset(imgs_ex, labels_ex)
-        full_dataset = ConcatDataset([dataset, exemplar_dataset])
-    else:
-        full_dataset = dataset
-
-    train_loader = DataLoader(full_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
-
+    # --- 2. DATASET E TRAINING ---
+    dataset = RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR[fine_tuning_on], num_training_samples=num_train_samples)
+    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers)
 
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
 
-    # Training loop
-    start_time = time.time()
     for epoch in range(epochs):
-        exemplar_loader = get_exemplar_loader(exemplar_set, batch_size=batch_size)
         train_loss, train_acc = train_one_epoch_ucir(
-            model=classifier,
-            teacher=teacher,
-            dataloader=train_loader,
-            criterion=criterion,
-            optimizer=optimizer,
-            device=device,
-            lambda_new=lambda_new,
-            lambda_dist=lambda_dist,
-            lambda_exemplar=lambda_exemplar,
-            exemplar_loader=exemplar_loader,
-            save_dir="./logs_ucir/train",
-            task_name=fine_tuning_on
+            classifier, teacher, train_loader, criterion, optimizer, device,
+            lambda_new, lambda_dist
         )
-        print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
-    train_time = time.time() - start_time
-    print(f"Training completed in {train_time/60:.2f} minutes")
+        if (epoch + 1) % 5 == 0 or epoch == 0:
+            print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
 
-    new_exemplar_set = select_exemplars(classifier, dataset, number_exemplars, device)
-    imgs_new, labels_new = new_exemplar_set
-    if exemplar_set is None:
-        exemplar_set = (imgs_new, labels_new)
-    else:
-        imgs_old, labels_old = exemplar_set
-        imgs_total = torch.cat([imgs_old, imgs_new])
-        labels_total = torch.cat([labels_old, labels_new])
-        
-        # Riduci se superiamo number_exemplars
-        if imgs_total.size(0) > number_exemplars:
-            idx = torch.randperm(imgs_total.size(0))[:number_exemplars]
-            imgs_total = imgs_total[idx]
-            labels_total = labels_total[idx]
+    # --- 3. SALVATAGGIO CHECKPOINT PER IL PROSSIMO TASK ---
+    # Sovrascriviamo il file per passarlo al prossimo step del ciclo
+    torch.save({'state_dict': classifier.state_dict()}, checkpoint_file)
+    print(f"Modello salvato in {checkpoint_file} per il prossimo task.")
 
-        exemplar_set = (imgs_total, labels_total)
-    # Save checkpoint to the specified checkpoint_file (USER REQUEST)
-    checkpoint_path = checkpoint_file
-    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
-    torch.save({'state_dict': classifier.state_dict()}, checkpoint_path)
-    print(f"Model saved to {checkpoint_path}")
-
-    # Prepare test datasets
-    dataloaders_test = {
-        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set', num_training_samples=100),
-        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set', num_training_samples=100),
-        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set', num_training_samples=100),
-        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set', num_training_samples=100),
-        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set', num_training_samples=100),
-        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set', num_training_samples=100),  # Uncomment if sdv2_1 is available
-
-    }
-
-
-
-
-
+    # --- 4. VALUTAZIONE SU TUTTI I TASK DELL'ORDINE ---
+    # Parsiamo la stringa dell'ordine per avere la lista corretta
+    order_list = [t.strip() for t in order.replace('[','').replace(']','').split(',')]
     test_results = {}
-    for name, dataset in dataloaders_test.items():
+    
+    print("Avvio valutazione sui test set...")
+    for test_task in order_list:
+        test_dataset = RealSynthethicDataloader(IMAGE_DIR['real'], IMAGE_DIR[test_task], split='test_set', num_training_samples=num_train_samples)
+        # Importante: shuffle=False per test
+        test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        
+        _, acc, _, _ = evaluate3(classifier, test_loader, criterion, device, 
+                                 test_name=test_task, save_dir=logs_dir, 
+                                 task_name=fine_tuning_on, fake_type=test_task)
+        test_results[test_task] = acc
 
-        test_loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
-                                num_workers=num_workers)
-
-        fake_type = name
-        print(f"Evaluating on {name} with fake type {fake_type}...")
-        loss, acc, preds, labels = evaluate3(classifier, test_loader, criterion, device,
-                              test_name=name, save_dir=logs_dir, task_name=fine_tuning_on,
-                              fake_type=fake_type)
-        test_results[name] = {"loss": loss, "acc": acc, "feat_time": 0, "preds": preds, "labels": labels}
-
-    # --- Append evaluation results to CSV ---
-    # CSV columns/order requested by user:
-    csv_columns = []
-    csv_columns.append("fine_tuning_on")
-    for o in order:
-        csv_columns.append(o)
-
-    # Default path if not provided
-    eval_csv_path = os.path.join(logs_dir, "eval_results_ucir.csv")
-    os.makedirs(os.path.dirname(eval_csv_path), exist_ok=True)
-
+    # --- 5. SALVATAGGIO CSV SPECIFICO PER QUESTO ORDINE ---
+    # Creiamo un nome file univoco basato sull'ordine
+    csv_filename = f"results_{order.replace(',', '_')}.csv"
+    eval_csv_path = os.path.join(logs_dir, csv_filename)
+    
+    # Intestazione colonne: Task Corrente + Lista Task Test
+    csv_headers = ["fine_tuning_on"] + order_list
+    
+    file_exists = os.path.isfile(eval_csv_path)
     with open(eval_csv_path, 'a') as f:
-        if os.path.getsize(eval_csv_path) == 0:
-            # write header if file is empty
-            f.write(','.join(csv_columns) + '\n')
+        # Scrivi header solo se il file è nuovo o vuoto
+        if not file_exists or os.path.getsize(eval_csv_path) == 0:
+            f.write(','.join(csv_headers) + '\n')
 
+        # Costruisci la riga dati rispettando l'ordine delle colonne
         row = [fine_tuning_on]
-        for col in csv_columns[1:]:
-            if col in test_results:
-                row.append(f"{test_results[col]['acc']:.5f}")
-            else:
-                row.append('')
+        for task_col in order_list:
+            acc_val = test_results.get(task_col, 0.0)
+            row.append(f"{acc_val:.5f}")
         f.write(','.join(row) + '\n')
-    return test_results, exemplar_set
+
+    return test_results
+
 # ---------------------------------------------
-# Main CLI (kept for convenience)
+# Main CLI
 # ---------------------------------------------
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=1)
-    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--epochs', type=int, default=5) # Default ragionevole
+    parser.add_argument('--lr', type=float, default=1e-4)
     parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--num_train_samples', type=int, default=100,
-                        help="Number of training samples to use. If None, use all available samples.")
-    parser.add_argument('--backbone', type=str, default='stylegan1',
-                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4', 'stylegan3','sdv2_1'],
-                        help="Which backbone feature extractor to use")    
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint/checkpoint_HELLO_ucir.pth',
-                        help="Path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)")
-    parser.add_argument('--order', default='[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
-                        help="Order of model steps for saving features.")
-    parser.add_argument('--lambda_new', type=float, default=1.0,
-                    help="Peso della loss sul task corrente")
-    parser.add_argument('--lambda_dist', type=float, default=1.0,
-                    help="Peso della distillation loss per le classi vecchie")
-    parser.add_argument('--lambda_exemplar', type=float, default=0,
-                    help="Peso opzionale per la loss sugli esemplari (se usati)")
-    parser.add_argument('--number_exemplars', type=int, default=10,
-                    help="Numero di esemplari da mantenere (se usati)")
+    parser.add_argument('--num_train_samples', type=int, default=None)
+    parser.add_argument('--lambda_new', type=float, default=1.0)
+    parser.add_argument('--lambda_dist', type=float, default=0.5)
     args = parser.parse_args()
 
-    exemplar = None
-    order_list = [x.strip() for x in args.order.strip('[]').split(',')]
-    for task in order_list:
-        results, exemplar = fine_tune(**vars(args), fine_tuning_on=task, exemplar_set=exemplar)  
-        print("All test results:")
-        for k, v in results.items():
-            print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")
+    # LISTA DEGLI ORDINI DA ESEGUIRE
+    orders_to_run = [
+        "stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1",
+        "sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
+        "stylegan3,stylegan_xl,stylegan1,stylegan2,sdv1_4,sdv2_1",
+        "sdv2_1,sdv1_4,stylegan_xl,stylegan3,stylegan2,stylegan1"
+    ]
+
+    for current_order_str in orders_to_run:
+        print("\n" + "="*60)
+        print(f"NUOVA SEQUENZA DI TRAINING: {current_order_str}")
+        print("="*60)
+
+        tasks = [t.strip() for t in current_order_str.split(",") if t.strip()]
+        
+        # 1. Definizione Backbone: È sempre il PRIMO task dell'ordine corrente
+        current_backbone = tasks[0]
+        
+        # 2. Gestione Checkpoint Sequenziale
+        # Creiamo un percorso univoco per questa sequenza per evitare conflitti
+        seq_id = current_order_str.replace(",", "_")
+        checkpoint_path = f"checkpoint/ckpt_ucir_{seq_id}.pth"
+        
+        # RESET: Se esiste un file vecchio per questo ordine, lo cancelliamo 
+        # per assicurarci di partire da zero (dal backbone puro)
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+            print(f"Checkpoint precedente rimosso. Inizio pulito.")
+
+        # 3. Loop sui Task
+        for i, task in enumerate(tasks):
+            print(f"\n--- Step {i+1}/{len(tasks)}: Fine-tuning su {task} ---")
+            
+            # Chiamata principale
+            # Nota: 'checkpoint_file' viene passato sia per caricare (se esiste) che per salvare
+            fine_tune(
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                device=args.device,
+                epochs=args.epochs,
+                lr=args.lr,
+                seed=args.seed,
+                num_train_samples=args.num_train_samples,
+                
+                fine_tuning_on=task,           # Task attuale su cui addestrare
+                backbone=current_backbone,     # Architettura base (definita dal primo task)
+                checkpoint_file=checkpoint_path, # File "staffetta" per i pesi
+                order=current_order_str,       # Ordine completo per il CSV
+                
+                lambda_new=args.lambda_new,
+                lambda_dist=args.lambda_dist
+            )
+
+    print("\n\nTUTTI GLI ORDINI COMPLETATI.")

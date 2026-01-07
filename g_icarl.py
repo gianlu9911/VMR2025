@@ -259,8 +259,8 @@ def train_and_eval(args):
 
         
         
-        pin_memory = True if ("cuda" in str(device).lower()) else False
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=pin_memory)
+        pin_memory = False
+        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers, pin_memory=False)
 
         optimizer = torch.optim.Adam(icarl_net.parameters(), lr=args.backbone_lr, weight_decay=args.weight_decay)
         criterion = nn.CrossEntropyLoss().to(device)
@@ -327,7 +327,7 @@ def train_and_eval(args):
 
         results.append(row)
         df = pd.DataFrame(results)
-        df.to_csv(os.path.join("./logs_icarl", "sequential_finetune_results.csv"), index=False)
+        df.to_csv(os.path.join(f"./logs_icarl", "sequential_finetune_{args.order_str}.csv"), index=False)
 
     print("All tasks finished")
     return pd.DataFrame(results)
@@ -338,7 +338,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',)
     parser.add_argument('--batch_size', type=int, default=64)
-    parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--epochs_per_task', type=int, default=5)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
@@ -346,6 +346,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_amp', action='store_true')
     parser.add_argument('--max_train_samples', type=int, default=None,
                         help='Limit the number of training samples per task (None for all)')
+    parser.add_argument('--order', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',)
     
     ### icarl parameters
     parser.add_argument('--lamda_dist', type=float, default=0.1)
@@ -353,9 +354,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     orders = [
         "stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1",
-        #"stylegan1,stylegan2,stylegan3,stylegan_xl,sdv1_4,sdv2_1",
-        #"sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
-        #"stylegan2,stylegan3,sdv2_1,stylegan1,stylegan_xl, sdv1_4"
+        "stylegan1,stylegan2,stylegan3,stylegan_xl,sdv1_4,sdv2_1",
+        "sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
+        "stylegan2,stylegan3,sdv2_1,stylegan1,stylegan_xl,sdv1_4"
     ]
     for o in orders:
         args.tasks = o
@@ -363,6 +364,7 @@ if __name__ == '__main__':
         print(results)
 
         order_str = o.replace(" ", "").replace(",", "_")
+        args.order = order_str
         path = f"logs_icarl/new_sequential_results_{order_str}.csv"
 
         # scrive header solo se il file NON esiste
@@ -374,10 +376,11 @@ if __name__ == '__main__':
             header=write_header,
             index=False
         )
-        a,b,f = logging(f"logs_icarl/new_sequential_results_{order_str}.csv")
+        a,b,fa = logging(f"logs_icarl/new_sequential_results_{order_str}.csv")
         # write to csv the a,b,f value in append mode
         with open(f"logs_icarl/new_sequential_results_{order_str}.csv", "a") as f:
-            f.write(f"ACC:{a:.4f},BWT:{b:.4f},FWT:{f:.4f}\n")
+            f.write(f"ACC:{a:.4f},BWT:{b:.4f},FWT:{fa:.4f}\n")
         # delete lgs_ingore folder
         os.system("rm -rf ./logs_ingore")
+        os.system("rm -rf pymp-*")
 
