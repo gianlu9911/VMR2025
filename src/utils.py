@@ -288,34 +288,40 @@ class BalancedBatchSampler(Sampler):
 # Relative Representation and classifier
 # ---------------------------------------------
 class RelativeRepresentation(nn.Module):
-    def __init__(self, anchors, eps=1e-8):
+    def __init__(self, anchors, eps=1e-8, verbose=False):   
         super().__init__()
         anchors = anchors.float()
         norms = anchors.norm(dim=1, keepdim=True).clamp_min(eps)
         anchors = anchors / norms
         self.register_buffer("anchors", anchors)
+        self.verbose = verbose
 
     def forward(self, x):
-        print("[RelativeRepresentation] Input x shape:", x.shape)
+        if self.verbose:
+            print("[RelativeRepresentation] Input x shape:", x.shape)
         x = F.normalize(x, p=2, dim=1, eps=1e-8)
         out = torch.matmul(x, self.anchors.T)
-        print("[RelativeRepresentation] Output shape:", out.shape)
+        if self.verbose:
+            print("[RelativeRepresentation] Output shape:", out.shape)
         return out
 
 
 class RelClassifier(nn.Module):
-    def __init__(self, rel_module, in_dim, num_classes=2):
+    def __init__(self, rel_module, in_dim, num_classes=2, verbose=False):
         super().__init__()
         self.rel_module = rel_module
         self.classifier = nn.Linear(in_dim, num_classes)
         nn.init.xavier_uniform_(self.classifier.weight)
         nn.init.zeros_(self.classifier.bias)
+        self.verbose = verbose
 
     def forward(self, x):
-        print("[Classifier] Input x shape:", x.shape)
+        if self.verbose:
+            print("[Classifier] Input x shape:", x.shape)
         rel_x = self.rel_module(x)  # raw feats -> relative feats
         out = self.classifier(rel_x)
-        print("[Classifier] Output logits shape:", out.shape)
+        if self.verbose:
+            print("[Classifier] Output logits shape:", out.shape)
         return out
 
 # ---------------------------------------------
@@ -380,6 +386,38 @@ def extract_and_save_features_verbose(backbone, dataloader, feature_path, device
 
     torch.save({"features": feats, "labels": labels}, feature_path)
     print(f"\nFeatures saved to {feature_path} (time: {total_time/60:.2f} min)")
+
+
+def extract_and_save_features2(backbone, dataloader, feature_path, device, split='train_set'):
+    feats, labels = [], []
+    print(f"Saving features to {feature_path} (using float16)...")
+
+    start_time = time.time()
+    backbone.eval()
+    # Portiamo il backbone in half precision
+    backbone.half() 
+
+    with torch.no_grad():
+        for imgs, lbls in tqdm(dataloader, desc=f"Extracting {os.path.basename(feature_path)}"):
+            # Spostiamo su device e convertiamo in half precision
+            imgs = imgs.to(device).half() 
+            
+            with torch.cuda.amp.autocast(): # Consigliato anche in inference
+                out = backbone(imgs)
+            
+            # Salviamo su CPU come float16 per risparmiare spazio su disco
+            feats.append(out.detach().cpu().half()) 
+            labels.append(lbls)
+
+    feats = torch.cat(feats, dim=0)
+    labels = torch.cat(labels, dim=0)
+    total_time = time.time() - start_time
+
+    torch.save({"features": feats, "labels": labels}, feature_path)
+    print(f"Features saved to {feature_path} (time: {total_time/60:.2f} min)")
+    return feats, labels, total_time
+
+
 
 # ---------------------------------------------
 # Plotting utility: anchors + real + fake features

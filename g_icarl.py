@@ -22,7 +22,7 @@ import argparse
 import warnings
 warnings.filterwarnings("ignore")
 # change visible devices if needed
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import random
 import math
@@ -119,7 +119,7 @@ def set_global_seed(seed: int):
     torch.backends.cudnn.benchmark = False
 
 
-def evaluate_on_images(model, test_loader, device, test_name="test"):
+def evaluate_on_images_old(model, test_loader, device, test_name="test"):
     model.eval()
     model.to(device)
 
@@ -141,6 +141,50 @@ def evaluate_on_images(model, test_loader, device, test_name="test"):
     print(f"[{test_name}] Accuracy: {acc:.4f}")
     return acc
 
+import torch
+import numpy as np
+import os
+from tqdm import tqdm
+
+def evaluate_on_images(model, test_loader, device, test_name="test", save_dir="results"):
+    model.eval()
+    model.to(device)
+
+    all_logits = []
+    all_labels = []
+    correct = 0
+    total = 0
+
+    with torch.no_grad():
+        for imgs, labels in tqdm(test_loader, desc=f"Evaluating {test_name}", leave=False):
+            imgs = imgs.to(device)
+            labels = labels.to(device).long()
+
+            logits = model(imgs)
+            
+            # Salvataggio logits e labels (portandoli su CPU per non saturare la VRAM)
+            all_logits.append(logits.cpu())
+            all_labels.append(labels.cpu())
+
+            preds = logits.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+
+    # Concatenazione dei risultati
+    all_logits = torch.cat(all_logits, dim=0).numpy()
+    all_labels = torch.cat(all_labels, dim=0).numpy()
+
+    # Salvataggio su disco
+    os.makedirs(save_dir, exist_ok=True)
+    save_path = os.path.join(save_dir, f"logits_{test_name}.npy")
+    np.save(save_path, all_logits)
+    # Opzionale: salva anche le labels per confronto
+    np.save(save_path.replace("logits_", "labels_"), all_labels)
+
+    acc = correct / total if total > 0 else 0.0
+    print(f"[{test_name}] Accuracy: {acc:.4f} - Logits salvate in: {save_path}")
+    
+    return acc, all_logits
 
 def train_one_epoch_icarl(
     model,
@@ -313,11 +357,11 @@ def train_and_eval(args):
         test_accs = []
         for name, dataset in test_domains.items():
             test_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-            acc = evaluate_on_images(
+            acc, _ = evaluate_on_images(
                 icarl_net,
                 test_loader,
                 device,test_name=f"step{step}_{name}")  
-            print(f"Test_acc={acc:.4f})")
+            print(f"Test_acc={acc})")
             row[name + '_acc'] = acc
             test_accs.append(acc if not np.isnan(acc) else 0.0)
 
@@ -337,9 +381,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',)
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=126)
     parser.add_argument('--num_workers', type=int, default=0)
-    parser.add_argument('--epochs_per_task', type=int, default=5)
+    parser.add_argument('--epochs_per_task', type=int, default=1)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
     parser.add_argument('--weight_decay', type=float, default=1e-5)
     parser.add_argument('--seed', type=int, default=42)
@@ -354,9 +398,9 @@ if __name__ == '__main__':
     args = parser.parse_args()
     orders = [
         "stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1",
-        "stylegan1,stylegan2,stylegan3,stylegan_xl,sdv1_4,sdv2_1",
-        "sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
-        "stylegan2,stylegan3,sdv2_1,stylegan1,stylegan_xl,sdv1_4"
+        #"stylegan1,stylegan2,stylegan3,stylegan_xl,sdv1_4,sdv2_1",
+        #"sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
+        #"stylegan2,stylegan3,sdv2_1,stylegan1,stylegan_xl,sdv1_4"
     ]
     for o in orders:
         args.tasks = o

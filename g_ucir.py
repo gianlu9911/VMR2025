@@ -16,7 +16,58 @@ from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
 from src.g_utils import evaluate3
 
+
 def train_one_epoch_ucir(model, teacher, dataloader, criterion, optimizer, device,
+                         lambda_new=1.0, lambda_dist=1.0, scaler=None): # Aggiunto scaler
+    model.train()
+    running_loss, running_acc, num_samples = 0.0, 0.0, 0
+
+    for imgs, labels in dataloader:
+        imgs, labels = imgs.to(device), labels.to(device)
+        optimizer.zero_grad()
+
+        # AMP: forward pass con autocast
+        with torch.cuda.amp.autocast():
+            # 1. Forward sul task corrente
+            outputs = model(imgs)
+            loss_new = criterion(outputs, labels)
+
+            # 2. Distillation Loss
+            loss_dist = 0.0
+            if teacher is not None:
+                T = 2.0
+                with torch.no_grad():
+                    # Anche il teacher può beneficiare di autocast per velocità
+                    logits_teacher = teacher(imgs)
+                    soft_targets = torch.softmax(logits_teacher / T, dim=1)
+                
+                loss_dist = nn.KLDivLoss(reduction='batchmean')(
+                    torch.log_softmax(outputs / T, dim=1),
+                    soft_targets
+                ) * (T * T)
+
+            loss_total = lambda_new * loss_new + lambda_dist * loss_dist 
+
+        # AMP: backward pass scalato
+        if scaler is not None:
+            scaler.scale(loss_total).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss_total.backward()
+            optimizer.step()
+
+        # Calcolo metriche (rimane uguale)
+        _, preds = torch.max(outputs, 1)
+        acc = (preds == labels).float().mean().item()
+        batch_size = labels.size(0)
+        running_loss += loss_total.item() * batch_size
+        running_acc += acc * batch_size
+        num_samples += batch_size
+
+    return running_loss / num_samples, running_acc / num_samples
+
+def train_one_epoch_ucir_no_ampe(model, teacher, dataloader, criterion, optimizer, device,
                          lambda_new=1.0, lambda_dist=1.0):
     model.train()
     running_loss, running_acc, num_samples = 0.0, 0.0, 0
@@ -110,11 +161,12 @@ def fine_tune(
 
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
 
     for epoch in range(epochs):
         train_loss, train_acc = train_one_epoch_ucir(
             classifier, teacher, train_loader, criterion, optimizer, device,
-            lambda_new, lambda_dist
+            lambda_new, lambda_dist, scaler
         )
         if (epoch + 1) % 5 == 0 or epoch == 0:
             print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
@@ -161,6 +213,8 @@ def fine_tune(
             row.append(f"{acc_val:.5f}")
         f.write(','.join(row) + '\n')
 
+    
+
     return test_results
 
 # ---------------------------------------------
@@ -169,7 +223,7 @@ def fine_tune(
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=64)
+    parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--device', type=str, default='0')
     parser.add_argument('--epochs', type=int, default=5) # Default ragionevole
@@ -182,12 +236,11 @@ if __name__ == "__main__":
 
     # LISTA DEGLI ORDINI DA ESEGUIRE
     orders_to_run = [
-        "stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1",
+        #"stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1",
+        #"stylegan1,stylegan2,stylegan3,stylegan_xl,sdv1_4,sdv2_1",
         "sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
-        "stylegan3,stylegan_xl,stylegan1,stylegan2,sdv1_4,sdv2_1",
-        "sdv2_1,sdv1_4,stylegan_xl,stylegan3,stylegan2,stylegan1"
+        "stylegan2,stylegan3,sdv2_1,stylegan1,stylegan_xl,sdv1_4"
     ]
-
     for current_order_str in orders_to_run:
         print("\n" + "="*60)
         print(f"NUOVA SEQUENZA DI TRAINING: {current_order_str}")

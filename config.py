@@ -10,6 +10,7 @@ PRETRAINED_MODELS = {
     'sd1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
     'sdv1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
     'stylegan_xl' : os.path.join(CHECKPOINT_DIR, 'stylegan_xl.pth'),
+    'cyclegan_facades' : os.path.join('checkpoint', 'cyclegan_facades.pth'),
 }
 # SG1 -> SG2 -> SDV1.4 -> SG3 -> SGXL -> SD2.1
 IMAGE_DIR = {
@@ -20,4 +21,14 @@ IMAGE_DIR = {
     'stylegan3' : os.path.join(DATASET_DIR, 'generated', 'stylegan3-psi-0.5', 'images1024x1024'),
     'stylegan_xl' : os.path.join(DATASET_DIR, 'generated', 'styleganxl-psi-0.5', 'images1024x1024'),
     'sdv2_1'    : os.path.join(DATASET_DIR, 'generated', 'sdv2_1', 'images1024x1024'),  # Add path for sdv2_1
+
+}
+
+IMAGE_DIR_DOGAN = {
+        'real_DoGAN_facades' : '/seidenas/datasets/DoGANs/new/Pristine/CycleGAN/facades/',
+        'cyclegan_facades' : '/seidenas/datasets/DoGANs/new/Generated/CycleGAN/facades/',
+        'progan_celeb256' : '/seidenas/datasets/DoGANs/new/Generated/GGAN256/celeba256',
+        'progan_1024_celebhq' : '/seidenas/datasets/DoGANs/new/Generated/GGAN1024/celebhq',
+        'glow_smiling' : '/seidenas/datasets/DoGANs/new/Generated/glow/Smiling',
+        'star_gan' : '/seidenas/datasets/DoGANs/new/Generated/starGAN/Smiling',
 }

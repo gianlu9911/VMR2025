@@ -736,6 +736,66 @@ def train_one_epoch2(
 
     return running_loss / num_samples, running_acc / num_samples
 
+
+def train_one_epoch3(
+        model, dataloader, criterion, optimizer, device,
+        save_dir, task_name, scaler=None # Aggiunto scaler
+):
+    model.train()
+    running_loss, running_acc, num_samples = 0.0, 0.0, 0
+    
+    all_preds, all_labels = [], []
+    real_logits_list, fake_logits_list = [], []
+
+    for features, labels in dataloader:
+        # Se le feature sono state salvate come half, portiamole su device
+        features, labels = features.to(device), labels.to(device)
+        
+        optimizer.zero_grad()
+
+        # --- MIXED PRECISION FORWARD ---
+        with torch.cuda.amp.autocast(enabled=scaler is not None):
+            outputs = model(features)
+            loss = criterion(outputs, labels)
+
+        # --- MIXED PRECISION BACKWARD ---
+        if scaler is not None:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
+
+        # ---- logica metriche (resta uguale) ----
+        with torch.no_grad():
+            _, preds = torch.max(outputs, 1)
+            acc = (preds == labels).float().mean().item()
+            
+            all_preds.append(preds.cpu())
+            all_labels.append(labels.cpu())
+            
+            correct_mask = preds == labels
+            outputs_correct = outputs[correct_mask]
+            labels_correct = labels[correct_mask]
+
+            if outputs_correct.size(0) > 0:
+                real_logits = outputs_correct[labels_correct == 0]
+                fake_logits = outputs_correct[labels_correct != 0]
+                if real_logits.numel() > 0:
+                    real_logits_list.append(real_logits.cpu())
+                if fake_logits.numel() > 0:
+                    fake_logits_list.append(fake_logits.cpu())
+
+        batch_size = labels.size(0)
+        running_loss += loss.item() * batch_size
+        running_acc += acc * batch_size
+        num_samples += batch_size
+
+    # ... (il resto della funzione per il salvataggio dei .npy resta invariato)
+    return running_loss / num_samples, running_acc / num_samples
+
+
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     model.train()
     running_loss, running_acc, num_samples = 0.0, 0.0, 0
@@ -878,6 +938,81 @@ def evaluate_mc(model, dataloader, criterion, device, rel_module=None,
 
     return avg_loss, avg_acc
 
+def evaluate4(
+    model,
+    dataloader,
+    criterion,
+    device,
+    test_name="test_set",
+    save_dir="./logs",
+    task_name=None,
+    fake_type=None
+):
+    model.eval()
+    val_loss, val_acc, num_samples = 0.0, 0.0, 0
+    all_preds, all_labels = [], []
+    real_logits_list, fake_logits_list = [], []
+
+    os.makedirs(save_dir, exist_ok=True)
+    os.makedirs(os.path.join(save_dir, "logits"), exist_ok=True)
+
+    with torch.no_grad():
+        for features, labels in dataloader:
+            # FIX: Convertiamo le feature in .float() per matchare i pesi del classificatore
+            features, labels = features.to(device).float(), labels.to(device)
+
+            # Usiamo autocast per coerenza, anche se qui il modello è FP32
+            with torch.cuda.amp.autocast():
+                outputs = model(features)
+                loss = criterion(outputs, labels)
+
+            probs = torch.softmax(outputs, dim=1)
+            _, preds = torch.max(probs, 1)
+
+            # update stats
+            batch_size = labels.size(0)
+            acc = (preds == labels).float().mean().item()
+            val_loss += loss.item() * batch_size
+            val_acc += acc * batch_size
+            num_samples += batch_size
+
+            # store all preds/labels
+            all_preds.append(preds.cpu())
+            all_labels.append(labels.cpu())
+
+            # ---- LOGICA LOGITS ----
+            # Salviamo i logits per analisi successive (es. calcolo soglie o plot)
+            real_logits = outputs[labels == 0]
+            fake_logits = outputs[labels != 0]
+
+            if real_logits.numel() > 0:
+                real_logits_list.append(real_logits.cpu())
+            if fake_logits.numel() > 0:
+                fake_logits_list.append(fake_logits.cpu())
+
+    # ---- Concatenazione e salvataggio ----
+    all_preds = torch.cat(all_preds).numpy()
+    all_labels = torch.cat(all_labels).numpy()
+
+    if len(real_logits_list) > 0:
+        all_real = torch.cat(real_logits_list)
+        np.save(os.path.join(save_dir, f"logits/real_step_{task_name}.npy"), all_real.numpy())
+        # Nota: perché salvi all_real anche come anchors? 
+        # Di solito gli anchors sono feature, non logits.
+        np.save(os.path.join(save_dir, f"logits/anchors_step_{task_name}.npy"), all_real.numpy())
+
+    if len(fake_logits_list) > 0:
+        all_fake = torch.cat(fake_logits_list)
+        np.save(
+            os.path.join(save_dir, f"logits/fake_step_{task_name}_faketype_{fake_type}.npy"),
+            all_fake.numpy()
+        )
+
+    avg_loss = val_loss / num_samples
+    avg_acc = val_acc / num_samples
+    print(f"[{test_name}] - Loss: {avg_loss:.4f}, Acc: {avg_acc:.4f}")
+    
+    return avg_loss, avg_acc, all_preds, all_labels
 
 import os
 import torch
@@ -952,8 +1087,7 @@ def evaluate3(
         raise ValueError("No correctly classified REAL samples!")
 
     all_real = torch.cat(real_logits_list)
-    take_n = min(all_real.shape[0], 200)
-    mid = take_n // 2
+
     np.save(os.path.join(save_dir, f"logits/real_step_{task_name}.npy"),
             all_real.numpy())
     np.save(os.path.join(save_dir, f"logits/anchors_step_{task_name}.npy"),
@@ -964,7 +1098,7 @@ def evaluate3(
         all_fake = torch.cat(fake_logits_list)
         np.save(
             os.path.join(save_dir, f"logits/fake_step_{task_name}_faketype_{fake_type}.npy"),
-            all_fake[:100].numpy()
+            all_fake.numpy()
         )
 
     avg_loss = val_loss / num_samples

@@ -21,7 +21,7 @@ import argparse
 import warnings
 warnings.filterwarnings("ignore")
 # change visible devices if needed
-#s.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import random
 import math
@@ -204,6 +204,11 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
     os.makedirs(save_dir, exist_ok=True)
     rows = []
     losses = []
+    
+    ### AGGIUNTO 1: Liste per accumulare i tensori grezzi
+    all_logits_list = [] 
+    all_labels_list = [] 
+
     sample_idx = 0
 
     with torch.no_grad():
@@ -215,6 +220,10 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
             loss = criterion(outputs, labels)
             losses.append(loss.item())
 
+            ### AGGIUNTO 2: Salviamo i tensori nella lista (portandoli su CPU per risparmiare VRAM)
+            all_logits_list.append(outputs.cpu())
+            all_labels_list.append(labels.cpu())
+
             probs = F.softmax(outputs, dim=1)
             _, preds = torch.max(probs, dim=1)
 
@@ -223,6 +232,7 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
             labels_cpu = labels.cpu().numpy()
             batch_size = labels_cpu.shape[0]
             num_probs = probs_cpu.shape[1] if probs_cpu.ndim == 2 else 0
+            
             for i in range(batch_size):
                 rows.append({
                     "idx": sample_idx,
@@ -235,17 +245,43 @@ def evaluate_on_images(backbone, test_loader, criterion, device, test_name="test
 
     avg_loss = float(np.mean(losses)) if len(losses) > 0 else float('nan')
     preds_all = np.array([r['pred'] for r in rows], dtype=int) if len(rows) > 0 else np.array([], dtype=int)
-    labels_all = np.array([r['label'] for r in rows], dtype=int) if len(rows) > 0 else np.array([], dtype=int)
-    accuracy = float((preds_all == labels_all).sum() / labels_all.shape[0]) if labels_all.size > 0 else float('nan')
+    labels_all_csv = np.array([r['label'] for r in rows], dtype=int) if len(rows) > 0 else np.array([], dtype=int)
+    accuracy = float((preds_all == labels_all_csv).sum() / labels_all_csv.shape[0]) if labels_all_csv.size > 0 else float('nan')
 
     csv_out = os.path.join(save_dir, f"{test_name}_predictions.csv")
     df_preds = pd.DataFrame(rows, columns=["idx", "label", "pred", "prob_real", "prob_fake"]) if len(rows) > 0 else pd.DataFrame(columns=["idx", "label", "pred", "prob_real", "prob_fake"]) 
     df_preds.to_csv(csv_out, index=False)
 
     summary_out = os.path.join(save_dir, f"{test_name}_summary.txt")
+
+    ### AGGIUNTO 3: Logica corretta per concatenare e dividere Real/Fake
+    # Concateniamo usando torch.cat perché sono tensori PyTorch nella lista
+    if len(all_logits_list) > 0:
+        full_logits = torch.cat(all_logits_list, dim=0) # Shape [N, 2]
+        full_labels = torch.cat(all_labels_list, dim=0) # Shape [N]
+        
+        # Calcoliamo softmax su tutto il tensore
+        full_probs = F.softmax(full_logits, dim=1)
+
+        # Creiamo maschere booleane
+        real_mask = (full_labels == 0)
+        fake_mask = (full_labels == 1)
+
+        # Filtriamo e convertiamo in Numpy SOLO alla fine per salvare
+        real_probs = full_probs[real_mask].numpy()
+        fake_probs = full_probs[fake_mask].numpy()
+        real_logits = full_logits[real_mask].numpy()
+        fake_logits = full_logits[fake_mask].numpy()
+
+        # Salvataggio
+        np.save(os.path.join(save_dir, f"{test_name}_real_probs.npy"), real_probs)
+        np.save(os.path.join(save_dir, f"{test_name}_fake_probs.npy"), fake_probs)
+        np.save(os.path.join(save_dir, f"{test_name}_real_logits.npy"), real_logits)
+        np.save(os.path.join(save_dir, f"{test_name}_fake_logits.npy"), fake_logits)
+    
     with open(summary_out, "w") as f:
         f.write(f"test_name: {test_name}\n")
-        f.write(f"num_samples: {len(labels_all)}\n")
+        f.write(f"num_samples: {len(labels_all_csv)}\n")
         f.write(f"avg_loss: {avg_loss:.6f}\n")
         f.write(f"accuracy: {accuracy:.6f}\n")
 
@@ -500,7 +536,7 @@ def train_and_eval(args):
         test_accs = []
         for name, dataset in test_domains.items():
             test_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-            loss, acc = evaluate_on_images(backbone, test_loader, criterion, device, test_name=f"step{step}_{name}", save_dir="./logs_finetuning")
+            loss, acc = evaluate_on_images(backbone, test_loader, criterion, device, test_name=f"step{step}_{name}", save_dir=f"./logs_finetuning_{args.order}")
             row[name + '_acc'] = acc
             test_accs.append(acc if not np.isnan(acc) else 0.0)
 
@@ -516,7 +552,9 @@ def train_and_eval(args):
 
         results.append(row)
         df = pd.DataFrame(results)
-        df.to_csv(os.path.join("./logs_finetuning", "sequential_finetune_results.csv"), index=False)
+        os.makedirs("./logs_finetuning", exist_ok=True)
+        o = args.order
+        df.to_csv(os.path.join(f"./logs_finetuning", f"sequential_finetune_results_{o}.csv"), index=False)
 
     print("All tasks finished")
     return pd.DataFrame(results)
@@ -527,7 +565,7 @@ if __name__ == '__main__':
     parser.add_argument('--device', type=str, default='cuda:0')
     parser.add_argument('--initial_backbone', type=str, default='stylegan1', choices=list(PRETRAINED_MODELS.keys()))
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',)
-    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--epochs_per_task', type=int, default=1)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
@@ -538,7 +576,7 @@ if __name__ == '__main__':
     parser.add_argument('--scheduler_step', type=int, default=5)
     parser.add_argument('--scheduler_gamma', type=float, default=0.5)
     parser.add_argument('--use_amp', action='store_true')
-    parser.add_argument('--max_train_samples', type=int, default=100,
+    parser.add_argument('--max_train_samples', type=int, default=-1,
                         help='Limit the number of training samples per task (-1 for all)')
     parser.add_argument('--balanced_subset', action='store_true', 
                         help='When used with --max_train_samples, create an exactly balanced subset across classes')
@@ -548,6 +586,7 @@ if __name__ == '__main__':
                         help='When using balanced_batch_sampler, allow oversampling of smaller classes to match largest class')
     parser.add_argument('--replacement', action='store_true',
                         help='When oversampling, sample with replacement where needed')
+    parser.add_argument('--order', type=str, default='None')
     args = parser.parse_args()
     orders = [
         "stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1",
@@ -558,10 +597,12 @@ if __name__ == '__main__':
     ]
     for o in orders:
         args.tasks = o
+        order_str = o.replace(" ", "").replace(",", "_")
+
+        args.order = order_str
         results = train_and_eval(args)
         print(results)
 
-        order_str = o.replace(" ", "").replace(",", "_")
         path = f"logs_finetune/new_sequential_fd_results_{order_str}.csv"
 
         # scrive header solo se il file NON esiste

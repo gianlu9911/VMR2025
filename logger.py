@@ -29,4 +29,10 @@ def logging(csv_path="logs_fd/sequential_fd_results.csv"):
     print(f"Mean Accuracy (ACC): {ACC:.4f}")
     print(f"Backward Transfer (BWT): {BWT:.4f}")
     print(f"Forward Transfer (FWT): {FWT:.4f}")
+
+    with open(csv_path, "a") as f:
+        f.write(f"Acc:{ACC:.4f},BWT:{BWT:.4f},FWT:{FWT:.4f}\n")
     return ACC, BWT, FWT
+
+if __name__ == "__main__":
+    logging("logs_ucir/results_stylegan1_stylegan2_sdv1_4_stylegan3_stylegan_xl_sdv2_1.csv")

@@ -3,7 +3,7 @@ import os
 import time
 import warnings
 warnings.filterwarnings("ignore")
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 from logger import *
 import numpy as np
 import torch
@@ -236,10 +236,11 @@ def run_sequential_finetunes(
     import seaborn as sns
 
     os.makedirs("figures", exist_ok=True)
+    n_anchros = kwargs["num_anchors"]
 
     matrix_acc = build_cross_domain_matrix(results_all, metric="acc")
-    matrix_acc.to_csv(f"figures/cross_domain_acc_{order}.csv")
-    a,b,f = logging(f"figures/cross_domain_acc_{order}.csv")
+    matrix_acc.to_csv(f"logs/cross_domain_acc_{order}_n_anchros_{n_anchros}.csv")
+    a,b,f = logging(f"logs/cross_domain_acc_{order}_n_anchros_{n_anchros}.csv")
     plt.figure(figsize=(10, 8))
     sns.heatmap(matrix_acc, annot=True, fmt=".3f", cmap="viridis")
     plt.title(F"ACC:_{a:.4f}_BWT:{b:.4f}_FWT:{f:.4f}")
@@ -328,7 +329,7 @@ orders = [
     ['stylegan2', 'sdv1_4', 'stylegan_xl', 'stylegan3', 'sdv2_1', 'stylegan1']
 ]
 
-nas = [100]
+nas = [1000, 5000]
 
 # Qui salviamo tutto
 results_plot = {i: {"n_anchors": [], "ACC": [], "BWT": [], "FWT": []} 

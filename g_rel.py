@@ -90,10 +90,12 @@ def fine_tune(
     backbone_net.eval()
 
     # Dataset directories
-    real_dir = IMAGE_DIR['real']
-    fake_dir = IMAGE_DIR[fine_tuning_on]
+    #real_dir = IMAGE_DIR['real']
+    real_dir = IMAGE_DIR['real_DoGAN']
+    #fake_dir = IMAGE_DIR[fine_tuning_on]
+    fake_dir = IMAGE_DIR['fake_DoGAN']
 
-    dataset = RealSynthethicDataloader(real_dir, fake_dir)
+    dataset = RealSynthethicDataloader(real_dir, fake_dir, split='')
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers)
 

@@ -345,7 +345,7 @@ def train_and_eval(args):
         test_accs = []
         for name, dataset in test_domains.items():
             test_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-            loss, acc = evaluate_on_images(backbone, test_loader, criterion, device, test_name=f"step{step}_{name}", save_dir="./logs_finetuning")
+            loss, acc = evaluate_on_images(backbone, test_loader, criterion, device, test_name=f"step{step}_{name}", save_dir="./logs_fd")
             row[name + '_acc'] = acc
             test_accs.append(acc if not np.isnan(acc) else 0.0)
         mean_acc = float(np.mean(test_accs)) if len(test_accs) > 0 else 0.0
@@ -379,7 +379,7 @@ if __name__ == '__main__':
     parser.add_argument('--initial_backbone', type=str, default='stylegan1', choices=list(PRETRAINED_MODELS.keys()))
     parser.add_argument('--tasks', type=str, default='stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1',
                         help='Comma-separated list of tasks to train on sequentially')
-    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--batch_size', type=int, default=64)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--epochs_per_task', type=int, default=1)
     parser.add_argument('--backbone_lr', type=float, default=1e-4)
