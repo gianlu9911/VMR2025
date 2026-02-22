@@ -237,8 +237,8 @@ if __name__ == "__main__":
     # LISTA DEGLI ORDINI DA ESEGUIRE
     orders_to_run = [
         #"stylegan1,stylegan2,sdv1_4,stylegan3,stylegan_xl,sdv2_1",
-        #"stylegan1,stylegan2,stylegan3,stylegan_xl,sdv1_4,sdv2_1",
-        "sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
+        "stylegan1,stylegan2,stylegan3,stylegan_xl,sdv1_4,sdv2_1",
+        #"sdv1_4,sdv2_1,stylegan1,stylegan2,stylegan3,stylegan_xl",
         "stylegan2,stylegan3,sdv2_1,stylegan1,stylegan_xl,sdv1_4"
     ]
     for current_order_str in orders_to_run:

@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-def logging(csv_path="logs_fd/sequential_fd_results.csv"):
+def logging(csv_path="logs_finetuning/sequential_finetune_results_sdv1_4_sdv2_1_stylegan1_stylegan2_stylegan3_stylegan_xl.csv"):
     # --- Carica la matrice dal CSV ---
     df = pd.read_csv(csv_path, index_col=0)
 
@@ -35,4 +35,4 @@ def logging(csv_path="logs_fd/sequential_fd_results.csv"):
     return ACC, BWT, FWT
 
 if __name__ == "__main__":
-    logging("logs_ucir/results_stylegan1_stylegan2_sdv1_4_stylegan3_stylegan_xl_sdv2_1.csv")
+    logging("/andromeda/personal/ggiuliani/VMR2025/logs_dogan/icarl_results.csv")
