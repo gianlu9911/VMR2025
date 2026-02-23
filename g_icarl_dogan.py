@@ -157,7 +157,7 @@ def fine_tune_cl_icarl(
     val_size = len(dataset) - train_size
     train_ds, val_ds = torch.utils.data.random_split(dataset, [train_size, val_size])
     
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers, persistent_workers=True)
+    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers,  pin_memory=False)
     
     # 3. TRAINING LOOP
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -185,7 +185,7 @@ def fine_tune_cl_icarl(
             split_idx = int(0.8 * len(t_ds))
             _, t_test_ds = torch.utils.data.random_split(t_ds, [split_idx, len(t_ds)-split_idx])
             
-            t_loader = DataLoader(t_test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+            t_loader = DataLoader(t_test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=False)
             
             all_preds, all_labels, all_logits = [], [], []
             
@@ -234,8 +234,8 @@ def fine_tune_cl_icarl(
 # ---------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument('--batch_size', type=int, default=512)
-    parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--batch_size', type=int, default=128)
+    parser.add_argument('--num_workers', type=int, default=0)
     parser.add_argument('--device', type=str, default='0') # Modificato per allinearsi all'os.environ
     parser.add_argument('--epochs', type=int, default=10) 
     parser.add_argument('--lr', type=float, default=1e-4) 
