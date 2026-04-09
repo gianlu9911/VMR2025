@@ -5,7 +5,7 @@ import warnings
 
 
 warnings.filterwarnings("ignore")
-#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 import numpy as np
 import torch
@@ -23,8 +23,7 @@ import re
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate
-from src.g_utils import train_one_epoch2 as train_one_epoch
+from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch
 from src.g_utils import evaluate3, save_features_only
 
 # ---------------------------------------------
@@ -52,7 +51,6 @@ def fine_tune(
     # NEW: feature-saving during evaluation
     save_feats: bool = False,
     save_feats_prefix: str = None,
-    order: str = '[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
 ):
 
     """Fine-tune relative-representation classifier.
@@ -93,8 +91,7 @@ def fine_tune(
     real_dir = IMAGE_DIR['real']
     fake_dir = IMAGE_DIR[fine_tuning_on]
 
-
-    dataset = RealSynthethicDataloader(real_dir, fake_dir, split='')
+    dataset = RealSynthethicDataloader(real_dir, fake_dir)
     train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                               num_workers=num_workers)
 
@@ -199,7 +196,7 @@ def fine_tune(
     # Training loop
     start_time = time.time()
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(classifier, feat_loader, criterion, optimizer, device, save_dir="./logs/train", task_name=fine_tuning_on)
+        train_loss, train_acc = train_one_epoch(classifier, feat_loader, criterion, optimizer, device)
         print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
     train_time = time.time() - start_time
     print(f"Training completed in {train_time/60:.2f} minutes")
@@ -212,17 +209,13 @@ def fine_tune(
 
     # Prepare test datasets
     dataloaders_test = {
-        "stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
-        "stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
-        "sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
-        "stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
-        "stylegan_xl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
-        "sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
+        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
+        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
+        "real_vs_sdv1_4": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
+        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+        "real_vs_styleganxl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+        "real_vs_sdv2_1": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'),  # Uncomment if sdv2_1 is available
     }
-
-
-
-
 
     test_results = {}
     for name, dataset in dataloaders_test.items():
@@ -231,31 +224,31 @@ def fine_tune(
 
         loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                                 num_workers=num_workers)
-        if force_recompute_features or not os.path.exists(feat_file_test):
-            feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
+        feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
                                                                           feat_file_test, device, split='test_set')
-        else:
-            data = torch.load(feat_file_test)
-            feats_test, labels_test = data["features"], data["labels"]
-            feat_time = 0.0
-            print("Loaded cached test features")
 
 
         # Evaluate classifier on test features
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-        fake_type = name
+        fake_type = re.sub(r'^.*real_vs_', '', name)
         print(f"Evaluating on {name} with fake type {fake_type}...")
-        loss, acc, preds, labels = evaluate3(classifier, test_loader, criterion, device, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
+        loss, acc = evaluate3(classifier, test_loader, criterion, device,
+                             rel_module=rel_module, test_name=name, save_dir="./logs", task_name=fine_tuning_on,
                               fake_type=fake_type)
-        test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time, "preds": preds, "labels": labels}
+        test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
     # --- Append evaluation results to CSV ---
     # CSV columns/order requested by user:
-    csv_columns = []
-    csv_columns.append("fine_tuning_on")
-    for o in order:
-        csv_columns.append(o)
+    csv_columns = [
+        'fine_tuning_on',
+        'real_vs_stylegan1',
+        'real_vs_stylegan2',
+        'real_vs_sdv1_4',
+        'real_vs_stylegan3',
+        'real_vs_styleganxl',
+        'real_vs_sdv2_1'  # Uncomment if sdv2_1 is available
+    ]
 
     # Default path if not provided
     if eval_csv_path is None:
@@ -274,12 +267,7 @@ def fine_tune(
             else:
                 row.append('')
         f.write(','.join(row) + '\n')
-    classifier.eval()
-    classifier.to(device)
-    anchors = anchors.to(device)
-    anchros_logits = classifier(anchors)
-    anchros_logits = anchros_logits.detach().cpu().numpy()
-    return test_results, anchors, anchros_logits
+    return test_results, anchors
 
 
 # ---------------------------------------------
@@ -323,13 +311,11 @@ if __name__ == "__main__":
     parser.add_argument('--save_feats_prefix', type=str, default='saved_numpy_features/step_prova',
                         help="Optional prefix (path+name) to use for saved feature .npy files. "
                              "If not provided, defaults to <feature_dir>/<test_name>_eval_feats")
-    parser.add_argument('--order', default='[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
-                        help="Order of model steps for saving features.")
 
     args = parser.parse_args()
 
     # pass explicit keyword args to the function (no argparse.Namespace usage inside fine_tune)
-    results, anchors, _ = fine_tune(**vars(args))
+    results, anchors = fine_tune(**vars(args))
     print("All test results:")
     for k, v in results.items():
         print(f" - {k}: loss={v['loss']:.4f}, acc={v['acc']:.4f}, feat_time={v['feat_time']:.2f}s")

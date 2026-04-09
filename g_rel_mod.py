@@ -2,9 +2,12 @@
 import os
 import time
 import warnings
-warnings.filterwarnings("ignore")
-#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+import shutil
 import re
+
+warnings.filterwarnings("ignore")
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+
 import numpy as np
 import torch
 import torch.nn as nn
@@ -20,18 +23,13 @@ import pandas as pd
 from config import PRETRAINED_MODELS, IMAGE_DIR
 from src.g_dataloader import RealSynthethicDataloader
 from src.net import load_pretrained_model
-from src.utils import  BalancedBatchSampler, RelativeRepresentation, extract_and_save_features,  plot_features_with_anchors
-from src.utils import train_one_epoch_with_distill as train_one_epoch  # assuming same signature
-from src.utils import RelClassifierWithEmbedding
-from src.utils import intra_class_compactness_loss
-from src.g_utils import evaluate3 as evaluate
-from src.utils import NTXentLoss
-from src.utils import freeze_model
+from src.utils import  BalancedBatchSampler, RelativeRepresentation, RelClassifier, extract_and_save_features, evaluate, train_one_epoch
+from src.g_utils import save_features_only
 
 # ---------------------------------------------
 # Fine-tuning pipeline (main)
 # ---------------------------------------------
-# --- nuova fine_tune (sostituisce la versione precedente) ---
+
 def fine_tune(
     batch_size: int = 32,
     num_workers: int = 8,
@@ -47,56 +45,35 @@ def fine_tune(
     plot_subsample: int = 5000,
     force_recompute_features: bool = False,
     eval_csv_path: str = None,
-    # checkpoint handling
     load_checkpoint: bool = False,
-    checkpoint_file: str = "checkpoint_mod/checkpoint_HELLO_mod.pth",
-    # NEW: distillation & compactness hyperparams
-    lambda_contrast: float = 0.5,
-    lambda_compact: float = 0.01,
-    use_distillation: bool = False,
-    only_on_real_for_contrast: bool = True,
-    embedding_dim: int = 256,
-    hidden_dim: int = 512,
-    save_feats_prefix = False,
-    save_feats = False,
-    order = None
+    checkpoint_file: str = "checkpoint/checkpoint_HELLO.pth",
+    save_feats: bool = False,
+    save_feats_prefix: str = None,
+    # Aggiungiamo un run_id per tracciare i log se vuoi
+    run_id: str = "Run_X"
 ):
-    """
-    Fine-tune with optional contrastive distillation and intra-class compactness loss.
 
-    IMPORTANT: requires in src.utils:
-      - RelClassifierWithEmbedding
-      - NTXentLoss
-      - freeze_model
-      - train_one_epoch_with_distill
+    """Fine-tune relative-representation classifier.
+
+    load_checkpoint: if True, attempt to load checkpoint_file into the classifier before training.
+    checkpoint_file: path to load/save classifier weights (default: checkpoint/checkpoint_HELLO.pth)
 
     Returns:
-        test_results (dict), anchors (torch.Tensor)
+        dict: test_results mapping dataset name -> {loss, acc, feat_time}
     """
-    # imports specific to extended training (assumes you added them in src.utils)
-    from src.utils import RelClassifierWithEmbedding, NTXentLoss, freeze_model, train_one_epoch_with_distill
-
-    # --- device handling
-    if isinstance(device, str) and device.lower() == 'cpu':
-        device = torch.device('cpu')
-    else:
-        if torch.cuda.is_available():
-            device = torch.device(f"cuda:{device}")
-        else:
-            device = torch.device('cpu')
+    device = torch.device("cuda:"+device if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
     feature_dir = f"./feature_{backbone}"
-    checkpoint_dir = "./checkpoint_mod"
+    checkpoint_dir = "./checkpoint"
     os.makedirs(feature_dir, exist_ok=True)
     os.makedirs(checkpoint_dir, exist_ok=True)
+    
     checkpoint_file_dir = os.path.dirname(checkpoint_file) if os.path.dirname(checkpoint_file) != '' else checkpoint_dir
     os.makedirs(checkpoint_file_dir, exist_ok=True)
 
     torch.manual_seed(seed)
     np.random.seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
@@ -126,9 +103,6 @@ def fine_tune(
         feat_time_full = 0.0
         print("Loaded cached full training features")
 
-    assert len(feats_full) == len(labels_full), "Mismatch between features and labels lengths."
-
-    # Subsample training samples if requested
     if num_train_samples is None:
         num_train_samples_val = None
     else:
@@ -144,7 +118,7 @@ def fine_tune(
 
     print(f"Using {len(feats)} training samples (real: {(labels==0).sum().item()}, fake: {(labels==1).sum().item()})")
 
-    # Anchors (take from real training features only)
+    # Anchors
     real_mask = labels == 0
     real_feats = feats[real_mask]
     if real_feats.size(0) == 0:
@@ -169,202 +143,231 @@ def fine_tune(
 
     rel_module = RelativeRepresentation(anchors.to(device))
 
-    # Dataset + Sampler for training classifier
+    # Dataset + Sampler
     feat_dataset = TensorDataset(feats, labels)
     sampler = BalancedBatchSampler(labels, batch_size=batch_size)
     feat_loader = DataLoader(feat_dataset, batch_sampler=sampler)
 
-    # Classifier: embedding head + classifier
-    classifier = RelClassifierWithEmbedding(rel_module, anchors.size(0),
-                                            embedding_dim=embedding_dim,
-                                            hidden_dim=hidden_dim,
-                                            num_classes=2).to(device)
+    # Classifier
+    classifier = RelClassifier(rel_module, anchors.size(0), num_classes=2).to(device)
 
-    # Optionally initialize classifier weights from checkpoint (existing behavior)
+    # Load checkpoint
     if load_checkpoint:
         if os.path.exists(checkpoint_file):
             try:
-                print(f"Initializing classifier from checkpoint {checkpoint_file} ...")
+                print(f"Loading checkpoint from {checkpoint_file} ...")
                 checkpoint = torch.load(checkpoint_file, map_location=device)
                 if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
-                    classifier.load_state_dict(checkpoint['state_dict'], strict=False)
+                    classifier.load_state_dict(checkpoint['state_dict'])
+                elif isinstance(checkpoint, dict):
+                    if 'model_state_dict' in checkpoint:
+                        classifier.load_state_dict(checkpoint['model_state_dict'])
+                    else:
+                        try:
+                            classifier.load_state_dict(checkpoint)
+                        except Exception as e:
+                            print(f"Warning: couldn't interpret checkpoint dict format: {e}. Continuing without loading.")
                 else:
-                    classifier.load_state_dict(checkpoint, strict=False)
-                print("Checkpoint loaded into classifier (init).")
+                    try:
+                        classifier.load_state_dict(checkpoint)
+                    except Exception as e:
+                        print(f"Warning: failed to load checkpoint: {e}. Continuing without loading.")
+                print("Checkpoint loaded into classifier.")
             except Exception as e:
-                print(f"Failed to init classifier from checkpoint: {e}. Continuing.")
-
-    # Optionally prepare old model for distillation (frozen)
-    old_model = None
-    if use_distillation and os.path.exists(checkpoint_file):
-        try:
-            old_model = RelClassifierWithEmbedding(rel_module, anchors.size(0),
-                                                  embedding_dim=embedding_dim,
-                                                  hidden_dim=hidden_dim,
-                                                  num_classes=2).to(device)
-            ckpt = torch.load(checkpoint_file, map_location=device)
-            if isinstance(ckpt, dict) and 'state_dict' in ckpt:
-                old_model.load_state_dict(ckpt['state_dict'], strict=False)
-            else:
-                old_model.load_state_dict(ckpt, strict=False)
-            print(f"Old model loaded from checkpoint {checkpoint_file} for distillation.")
-            old_model = freeze_model(old_model)
-            print("Old model loaded and frozen for distillation.")
-        except Exception as e:
-            print(f"Could not load old checkpoint for distillation: {e}")
-            old_model = None
-            # continue without distillation
+                print(f"Failed to load checkpoint from {checkpoint_file}: {e}. Continuing without loading.")
+        else:
+            print(f"Checkpoint file {checkpoint_file} not found. Continuing without loading.")
 
     criterion = nn.CrossEntropyLoss().to(device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=lr)
 
-    # Prepare NT-Xent instance
-    nt_xent = NTXentLoss(temperature=0.1)
-
-    # Training loop (uses the specialized train_one_epoch_with_distill)
+    # Training loop
     start_time = time.time()
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch_with_distill(
-            classifier, feat_loader, criterion, optimizer, device,
-            old_model=old_model,
-            nt_xent_loss=nt_xent,
-            lambda_contrast=lambda_contrast,
-            lambda_compact=lambda_compact,
-            only_on_real_for_contrast=only_on_real_for_contrast
-        )
+        train_loss, train_acc = train_one_epoch(classifier, feat_loader, criterion, optimizer, device)
         print(f"Epoch [{epoch+1}/{epochs}] - Loss: {train_loss:.4f}, Acc: {train_acc:.4f}")
     train_time = time.time() - start_time
     print(f"Training completed in {train_time/60:.2f} minutes")
 
-    # Save checkpoint to the specified checkpoint_file
+    # Save checkpoint
     checkpoint_path = checkpoint_file
-    os.makedirs(os.path.dirname(checkpoint_path) or checkpoint_dir, exist_ok=True)
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
     torch.save({'state_dict': classifier.state_dict()}, checkpoint_path)
     print(f"Model saved to {checkpoint_path}")
 
-    # Prepare test datasets (same as before)
-    dataloaders_test = {}
-    for o in order:
-        dataloaders_test[o] = RealSynthethicDataloader(real_dir, IMAGE_DIR[o], split='test_set')
+    # Prepare test datasets (NON TOCCATO)
+    dataloaders_test = {
+        "real_vs_stylegan1": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan1'], split='test_set'),
+        "real_vs_stylegan2": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan2'], split='test_set'),
+        "real_vs_sdv14": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv1_4'], split='test_set'),
+        "real_vs_stylegan3": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan3'], split='test_set'),
+        "real_vs_styleganxl": RealSynthethicDataloader(real_dir, IMAGE_DIR['stylegan_xl'], split='test_set'),
+        "real_vs_sdv21": RealSynthethicDataloader(real_dir, IMAGE_DIR['sdv2_1'], split='test_set'), 
+    }
 
     test_results = {}
     for name, dataset in dataloaders_test.items():
         feat_file_test = os.path.join(feature_dir, f"test_{name}_features.pt")
         print(f"Preparing test features for {name} -> {feat_file_test}")
 
-        if force_recompute_features or not os.path.exists(feat_file_test):
-            loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
+        loader = DataLoader(dataset, batch_size=batch_size, shuffle=False,
                                 num_workers=num_workers)
-            feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
-                                                                          feat_file_test, device, split='test_set')
-        else:
-            data = torch.load(feat_file_test)
-            feats_test, labels_test = data["features"], data["labels"]
-            feat_time = 0.0
-            print("Loaded cached test features")
+        feats_test, labels_test, feat_time = extract_and_save_features(backbone_net, loader,
+                                                                  feat_file_test, device, split='test_set')
 
+        anchors_cpu = rel_module(anchors.to(device)).cpu()
+        real_mask_eval = (labels_test == 0)
+        fake_mask_eval = (labels_test == 1)
+        real_feats_eval = feats_test[real_mask_eval]
+        real_feats_eval = rel_module(real_feats_eval.to(device)).cpu()
+        fake_feats_eval = feats_test[fake_mask_eval]
+        fake_feats_eval = rel_module(fake_feats_eval.to(device)).cpu()
 
+        if save_feats:
+            try:
+                os.makedirs("saved_numpy_features", exist_ok=True)
+                import re as _re  
+                fake_type = _re.sub(r'^.*real_vs_', '', name).split('*')[0]
+                domain = fine_tuning_on.replace("_", "")
+                prefix_to_use = os.path.join("saved_numpy_features", f"step_{domain}")
+
+                real_file = f"{prefix_to_use}_real.npy"
+                fake_file = f"{prefix_to_use}_fake_{fake_type}.npy"
+                anchors_file = f"{prefix_to_use}_anchors.npy"
+
+                real_np = real_feats_eval.cpu().numpy() if isinstance(real_feats_eval, torch.Tensor) else np.array(real_feats_eval)
+                fake_np = fake_feats_eval.cpu().numpy() if isinstance(fake_feats_eval, torch.Tensor) else np.array(fake_feats_eval)
+                anchors_np = anchors_cpu.cpu().numpy() if isinstance(anchors_cpu, torch.Tensor) else np.array(anchors_cpu)
+
+                if real_np.size > 0: np.save(real_file, real_np)
+                if fake_np.size > 0: np.save(fake_file, fake_np)
+                if anchors_np.size > 0: np.save(anchors_file, anchors_np)
+
+            except Exception as e:
+                print(f"[save_feats] ERROR while saving features for {name}: {e}")
+
+        os.makedirs("./logs", exist_ok=True)
+        plot_save_path = os.path.join("./logs", f"feature_plot_{name}_{plot_method}.png")
+        default_prefix = os.path.join(feature_dir, f"{name}_eval_feats")
 
         test_dataset = TensorDataset(feats_test, labels_test)
         test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
-        fake_type = re.sub(r'^.*real_vs_', '', name)
 
-        loss, acc, preds, labels = evaluate(classifier, test_loader, criterion, device,
-                             rel_module=rel_module, test_name=name, save_dir="./logs_mod", task_name=fine_tuning_on,
-                              fake_type=fake_type)
-
-        #loss, acc = evaluate(classifier, test_loader, criterion, device,
-                             #rel_module=rel_module, test_name=name, save_dir="./logs")
+        loss, acc = evaluate(classifier, test_loader, criterion, device,
+                             rel_module=rel_module, test_name=name, save_dir="./logs")
         test_results[name] = {"loss": loss, "acc": acc, "feat_time": feat_time}
 
-    # Append evaluation results to CSV
-    csv_columns = []
-    csv_columns.append("fine_tuning_on")
-    for o in order:
-        csv_columns.append(o)
-    csv_columns.append("lambda_contrast")
-    csv_columns.append("lambda_compact")
+    # --- Append evaluation results to CSV ---
+    # (NON TOCCATO)
+    csv_columns = [
+        'fine_tuning_on',
+        'real_vs_stylegan1',
+        'real_vs_stylegan2',
+        'real_vs_sdv14',
+        'real_vs_stylegan3',
+        'real_vs_styleganxl',
+        'real_vs_sdv21' 
+    ]
 
     if eval_csv_path is None:
-        eval_csv_path = os.path.join('logs_mod', 'test_accuracies.csv')
+        eval_csv_path = os.path.join('logs', 'test_accuracies.csv')
     os.makedirs(os.path.dirname(eval_csv_path), exist_ok=True)
 
-    file_new = not os.path.exists(eval_csv_path) or os.path.getsize(eval_csv_path) == 0
     with open(eval_csv_path, 'a') as f:
-        if file_new:
-            f.write('&'.join(csv_columns) + '\n')
-        row = [fine_tuning_on]
-        for col in csv_columns[1:-2]:
+        if os.path.getsize(eval_csv_path) == 0:
+            # Aggiungo la colonna Run_ID all'header per distinguere le sequenze
+            f.write('Run_ID,' + ','.join(csv_columns) + '\n')
+
+        # Aggiungo il run_id alla riga
+        row = [run_id, fine_tuning_on]
+        for col in csv_columns[1:]:
             if col in test_results:
                 row.append(f"{test_results[col]['acc']:.5f}")
             else:
                 row.append('')
-        row.append(f"{lambda_contrast:.5f}")
-        row.append(f"{lambda_compact:.5f}")
         f.write(','.join(row) + '\n')
-
     return test_results, anchors
 
-# --- nuovo main per grid-search su lambda_contrast / lambda_compact ---
+
+# ---------------------------------------------
+# Main CLI
+# ---------------------------------------------
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    # re-usa gli stessi argomenti essenziali
-    parser.add_argument('--batch_size', type=int, default=512)
+    parser.add_argument('--batch_size', type=int, default=256)
     parser.add_argument('--num_workers', type=int, default=8)
     parser.add_argument('--device', type=str, default='0')
-    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--epochs', type=int, default=5)
     parser.add_argument('--lr', type=float, default=1e-3)
     parser.add_argument('--seed', type=int, default=42)
     parser.add_argument('--num_train_samples', type=int, default=None)
-    parser.add_argument('--fine_tuning_on', type=str, default='stylegan2',
-                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4', 'stylegan3','sdv2_1'])
-    parser.add_argument('--backbone', type=str, default='stylegan1',
-                        choices=['stylegan1', 'stylegan2', 'stylegan_xl', 'sdv1_4', 'stylegan3','sdv2_1'])
+    parser.add_argument('--backbone', type=str, default='stylegan1')
+    parser.add_argument('--num_anchors', type=int, default=5000)
+    parser.add_argument('--plot_method', type=str, default='pca')
+    parser.add_argument('--plot_subsample', type=int, default=5000)
     parser.add_argument('--force_recompute_features', action='store_true')
-    parser.add_argument('--checkpoint_file', type=str, default='checkpoint_mod/checkpoint_HELLO_mod.pth')
-    parser.add_argument('--load_checkpoint', action='store_true',
-                        help="If set, attempt to initialize classifier from checkpoint (keeps old behaviour).")
-    parser.add_argument('--use_distillation', action='store_true',
-                        help="If set, tries to load checkpoint and use as frozen teacher for contrastive distillation.")
-    parser.add_argument('--eval_csv_path', type=str, default='logs_mod/lambda_search_results.csv')
-    parser.add_argument('--order', type=str, default=['stylegan1', 'stylegan2', 'sdv1_4', 'stylegan3', 'stylegan_xl', 'sdv2_1'])
+    parser.add_argument('--eval_csv_path', type=str, default=None)
+    parser.add_argument('--save_feats', action='store_true')
+    parser.add_argument('--save_feats_prefix', type=str, default='saved_numpy_features/step_prova')
+
     args = parser.parse_args()
 
-    # grid di esempio (modifica come preferisci)
-    lambda_contrast_values = [0.0, 0.1, 0.5]
-    lambda_compact_values = [0.0, 0.001, 0.01]
+    # LE TUE 4 SEQUENZE DI TRAINING
+    orders = [
+        '[stylegan1, stylegan2, sdv1_4, stylegan3, stylegan_xl, sdv2_1]',
+        '[stylegan1, stylegan2, stylegan3, stylegan_xl, sdv1_4, sdv2_1]',
+        '[sdv1_4, sdv2_1, stylegan1, stylegan2, stylegan3, stylegan_xl]',
+        '[stylegan2, sdv1_4, stylegan_xl, stylegan3, sdv2_1, stylegan1]',
+    ]
 
-    summary = {}
-    os.makedirs(os.path.dirname(args.eval_csv_path) or './logs_mod', exist_ok=True)
+    # LOOP SULLE SEQUENZE (Le 4 Run)
+    for run_idx, order_str in enumerate(orders):
+        run_name = f"Run_{run_idx + 1}"
+        print(f"\n\n{'='*60}")
+        print(f"=== INIZIO {run_name} | Sequenza: {order_str} ===")
+        print(f"{'='*60}")
 
-    for lc in lambda_contrast_values:
-        for lcomp in lambda_compact_values:
-            print("="*80)
-            print(f"Running with lambda_contrast={lc}, lambda_compact={lcomp}")
-            test_results, anchors = fine_tune(
-                batch_size=args.batch_size,
-                num_workers=args.num_workers,
-                device=args.device,
-                epochs=args.epochs,
-                lr=args.lr,
-                seed=args.seed,
-                num_train_samples=args.num_train_samples,
-                fine_tuning_on=args.fine_tuning_on,
-                backbone=args.backbone,
-                force_recompute_features=args.force_recompute_features,
-                load_checkpoint=args.load_checkpoint,
-                checkpoint_file=args.checkpoint_file,
-                lambda_contrast=lc,
-                lambda_compact=lcomp,
-                use_distillation=args.use_distillation,
-                eval_csv_path=args.eval_csv_path
-            )
-            # salvataggio riassunto in memoria
-            summary[(lc, lcomp)] = test_results
+        # Parsing della stringa per estrarre la lista di task
+        task_list = re.sub(r'[\[\]\s]', '', order_str).split(',')
 
-    print("\n=== GRID SEARCH SUMMARY ===")
-    for (lc, lcomp), res in summary.items():
-        # prendo l'accuracy su real_vs_stylegan2 come esempio (se esiste)
-        acc_main = res.get("real_vs_stylegan2", {}).get("acc", None)
-        print(f"lc={lc}, lcomp={lcomp} -> real_vs_stylegan2 acc: {acc_main}")
+        # Variabile per tenere in memoria il path del checkpoint del task precedente
+        prev_ckpt = ""
+
+        # LOOP SUI TASK DELLA SEQUENZA CORRENTE (Continual Learning)
+        for step_idx, current_task in enumerate(task_list):
+            print(f"\n>>> [{run_name}] Step {step_idx}: Training su '{current_task}'")
+
+            # Definiamo il nome univoco del checkpoint per questo specifico step
+            current_ckpt = os.path.join("checkpoint", f"cl_{run_name}_step_{step_idx}_{current_task}.pth")
+
+            # Prepariamo gli argomenti per fine_tune partendo da quelli del parser
+            func_args = vars(args).copy()
+            func_args['fine_tuning_on'] = current_task
+            func_args['checkpoint_file'] = current_ckpt
+            func_args['run_id'] = run_name
+
+            if step_idx == 0:
+                # Primo task della sequenza: NON caricare nulla, parti da zero
+                func_args['load_checkpoint'] = False
+            else:
+                # Dal secondo task in poi: CARICA il checkpoint del task precedente
+                func_args['load_checkpoint'] = True
+                
+                # Per poter caricare il file precedente ma salvare su quello nuovo,
+                # copiamo fisicamente il file .pth vecchio rinominandolo col nome nuovo.
+                # La funzione fine_tune lo troverà, lo caricherà, e a fine epoca lo sovrascriverà.
+                if os.path.exists(prev_ckpt):
+                    shutil.copy(prev_ckpt, current_ckpt)
+                    print(f"[*] Portati avanti i pesi da {prev_ckpt}")
+
+            # Esecuzione del fine tuning
+            results, anchors = fine_tune(**func_args)
+
+            # Aggiorniamo prev_ckpt per lo step successivo
+            prev_ckpt = current_ckpt
+
+            # Stampa compatta dei risultati a fine task
+            print(f"\n--- Risultati Test per [{run_name}] dopo training su {current_task} ---")
+            for k, v in results.items():
+                print(f" {k:20s}: Acc={v['acc']:.4f}")

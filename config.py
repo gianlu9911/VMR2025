@@ -10,6 +10,7 @@ PRETRAINED_MODELS = {
     'sd1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
     'sdv1_4'    : os.path.join(CHECKPOINT_DIR, 'res50_sfhq_part2.pth.tar'),
     'stylegan_xl' : os.path.join(CHECKPOINT_DIR, 'stylegan_xl.pth'),
+    'styleganxl' : os.path.join(CHECKPOINT_DIR, 'stylegan_xl.pth'),
     'cyclegan_facades' : os.path.join('checkpoint', 'cyclegan_facades.pth'),
     'dogan_faces' : "checkpoint/resnet50_progan_finetuned.pth",
 }
